@@ -689,6 +689,11 @@ export function buildGroundingFallbackResult(
   };
 }
 
+function isUUID(str?: string | null): boolean {
+  if (!str) return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
+}
+
 /**
  * Checks whether an authenticated user has authorization to access and audit a specific load.
  * Owner Admin: Has access to all loads within their organization.
@@ -703,9 +708,11 @@ export async function checkUserLoadAccess(
 ): Promise<boolean> {
   if (!userId || !organizationId || !loadId) return false;
 
-  // 1. Try Supabase admin check
+  // 1. Try Supabase admin / database check
   try {
     const admin = getSupabaseAdminSafe();
+
+    // 1a. Direct table query on public.loads (used by service_role and test mocks)
     const { data: loadRow, error: loadErr } = await admin
       .from('loads')
       .select('id, organization_id, assigned_dispatcher_id')
@@ -743,6 +750,30 @@ export async function checkUserLoadAccess(
 
       return false;
     }
+
+    // 1b. If direct table query didn't find the load (e.g. table RLS applies when using anon client),
+    // and both loadId and userId are valid UUIDs, invoke the database SECURITY DEFINER function:
+    // public.user_has_load_access(p_load_id UUID, p_user_id UUID)
+    if (isUUID(loadId) && isUUID(userId) && typeof (admin as any).rpc === 'function') {
+      const { data: hasAccess, error: rpcErr } = await (admin as any).rpc('user_has_load_access', {
+        p_load_id: loadId,
+        p_user_id: userId,
+      });
+
+      if (!rpcErr && typeof hasAccess === 'boolean') {
+        if (!hasAccess) {
+          return false;
+        }
+
+        // Verified load access via database SECURITY DEFINER function.
+        // Confirm tenant boundary if load row organization can be checked.
+        if (loadRow && (loadRow as any).organization_id && (loadRow as any).organization_id !== organizationId) {
+          return false;
+        }
+
+        return true;
+      }
+    }
   } catch {
     // Fall back to loadService in test/demo environments
   }
@@ -768,3 +799,4 @@ export async function checkUserLoadAccess(
     return false;
   }
 }
+

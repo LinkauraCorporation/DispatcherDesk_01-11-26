@@ -162,6 +162,9 @@ class BrokerService {
    * Helper to load raw brokers from localStorage or seed initial data
    */
   private getRawBrokers(orgId: string): (Broker & { status?: BrokerStatus })[] {
+    if (typeof localStorage === 'undefined') {
+      return [];
+    }
     const key = `${BROKERS_STORAGE_PREFIX}${orgId}`;
     const data = localStorage.getItem(key);
     if (!data) {
@@ -195,6 +198,7 @@ class BrokerService {
    * Helper to save raw brokers
    */
   private saveRawBrokers(orgId: string, brokers: (Broker & { status?: BrokerStatus })[]): void {
+    if (typeof localStorage === 'undefined') return;
     const key = `${BROKERS_STORAGE_PREFIX}${orgId}`;
     // Force tenant organization_id on all persisted records
     const sanitized = brokers.map((b) => ({
@@ -208,6 +212,7 @@ class BrokerService {
    * Helper to load loads for calculating broker performance
    */
   private getRawLoads(orgId: string): Load[] {
+    if (typeof localStorage === 'undefined') return [];
     const key = `${LOADS_STORAGE_PREFIX}${orgId}`;
     const data = localStorage.getItem(key);
     if (!data) return [];
