@@ -29,7 +29,7 @@ import {
   DetentionAuditResult,
 } from './detentionAuditTypes.ts';
 import { normalizeToIso } from './detentionAuditService.ts';
-import { getSupabaseAdmin } from '../../server/supabaseAdmin.ts';
+import { getSupabaseAdmin, getSupabaseAdminSafe } from '../../server/supabaseAdmin.ts';
 import { loadService } from '../loads/loadService.ts';
 
 export const VALID_DISCREPANCY_CODES = new Set<DiscrepancyCode>([
@@ -705,7 +705,7 @@ export async function checkUserLoadAccess(
 
   // 1. Try Supabase admin check
   try {
-    const admin = getSupabaseAdmin();
+    const admin = getSupabaseAdminSafe();
     const { data: loadRow, error: loadErr } = await admin
       .from('loads')
       .select('id, organization_id, assigned_dispatcher_id')

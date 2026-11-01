@@ -10,7 +10,7 @@ import { parseRateConfirmationText } from './src/modules/documents/rateConParser
 import { RazorpayAdapter } from './src/server/billing/providers/RazorpayAdapter.ts';
 import { BillingOrchestrator } from './src/server/billing/billingOrchestrator.ts';
 import { reserveBillingIdempotency, completeBillingIdempotency, classifySubscriptionError, transitionPendingVerificationToStarted } from './src/server/billing/idempotency.ts';
-import { getSupabaseAdmin } from './src/server/supabaseAdmin.ts';
+import { getSupabaseAdmin, getSupabaseAuthClient, getSupabaseAdminSafe } from './src/server/supabaseAdmin.ts';
 import { detentionAuditService, auditDetentionEligibility } from './src/modules/accessorials/detentionAuditService.ts';
 import {
   checkUserLoadAccess,
@@ -103,7 +103,7 @@ async function resolveDriverIdentity(token: string): Promise<DriverIdentity | nu
   }
 
   try {
-    const admin = getSupabaseAdmin();
+    const admin = getSupabaseAuthClient();
     const { data: { user }, error: authError } = await admin.auth.getUser(token);
     if (user && !authError) {
       const { data: driverRow } = await admin
@@ -137,7 +137,7 @@ async function isConversationOwnedByDriver(
   organizationId: string
 ): Promise<boolean> {
   try {
-    const admin = getSupabaseAdmin();
+    const admin = getSupabaseAdminSafe();
     const { data } = await admin
       .from('conversations')
       .select('id')
@@ -476,7 +476,7 @@ app.post(
         return res.status(403).json({ error: 'Forbidden: Conversation does not belong to driver' });
       }
 
-      const admin = getSupabaseAdmin();
+      const admin = getSupabaseAdminSafe();
 
       // 7. Authorization: Validate loadId association if provided
       if (loadId) {
@@ -635,7 +635,7 @@ app.get('/api/chat/attachment-url', async (req, res) => {
       return res.status(400).json({ error: 'Invalid conversation ID format in storage path' });
     }
 
-    const admin = getSupabaseAdmin();
+    const admin = getSupabaseAdminSafe();
 
     // 3. Authenticate actor (Driver or Dispatcher/Office User)
     // Check if actor is a Driver first
@@ -804,7 +804,7 @@ export async function authenticateBillingUser(req: express.Request): Promise<{ u
   }
 
   try {
-    const admin = getSupabaseAdmin();
+    const admin = getSupabaseAuthClient();
     const { data: { user }, error } = await admin.auth.getUser(token);
     if (error || !user) {
       if (isLocalOrDemo) {
@@ -835,7 +835,7 @@ export async function verifyOrgAccess(userId: string, organizationId: string): P
   }
 
   try {
-    const admin = getSupabaseAdmin();
+    const admin = getSupabaseAdminSafe();
 
     // 1. Check office team membership in organization_members
     const { data: memberData, error: memberError } = await admin
@@ -908,10 +908,10 @@ export async function authenticateAIUser(req: express.Request): Promise<{ userId
       return null;
     }
 
-    // Verify Bearer JWT with Supabase Admin
+    // Verify Bearer JWT with Supabase Auth
     try {
-      const admin = getSupabaseAdmin();
-      const { data: { user }, error } = await admin.auth.getUser(token);
+      const authClient = getSupabaseAuthClient();
+      const { data: { user }, error } = await authClient.auth.getUser(token);
       if (!error && user) {
         return { userId: user.id, userEmail: user.email, isDemo: false };
       }
@@ -1111,7 +1111,7 @@ app.post('/api/billing/create-subscription', async (req, res) => {
       return res.status(403).json({ error: 'Forbidden: Insufficient permissions to manage billing subscriptions' });
     }
 
-    const admin = getSupabaseAdmin();
+    const admin = getSupabaseAdminSafe();
     let sub: any = null;
     try {
       const { data: subData, error: subError } = await admin
@@ -1466,7 +1466,7 @@ app.post('/api/billing/cancel-subscription', async (req, res) => {
       return res.status(403).json({ error: 'Forbidden: Only organization owners/administrators may cancel subscriptions' });
     }
 
-    const admin = getSupabaseAdmin();
+    const admin = getSupabaseAdminSafe();
     const { data: sub, error: subError } = await admin
       .from('subscriptions')
       .select('*')
@@ -1532,7 +1532,7 @@ app.get('/api/billing/transactions', async (req, res) => {
       return res.status(403).json({ error: 'Forbidden: Insufficient permissions to access billing transactions' });
     }
 
-    const admin = getSupabaseAdmin();
+    const admin = getSupabaseAdminSafe();
     const { data, error } = await admin
       .from('billing_payment_transactions')
       .select('id, organization_id, subscription_id, provider, provider_payment_id, provider_order_id, provider_invoice_id, amount_cents, currency, status, billing_period_start, billing_period_end, error_code, error_description, created_at, updated_at')
@@ -1862,7 +1862,7 @@ app.post('/api/drivers/resolve-conflict', async (req, res) => {
       return res.status(400).json({ error: 'phone is required to resolve conflict' });
     }
 
-    const admin = getSupabaseAdmin();
+    const admin = getSupabaseAdminSafe();
     // Normalize phone E.164
     const canonicalDigits = phone.startsWith('+')
       ? phone.substring(1).replace(/\D/g, '')
