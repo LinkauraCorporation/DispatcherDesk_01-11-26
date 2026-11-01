@@ -1,0 +1,121 @@
+@import "tailwindcss";
+
+@layer base {
+  html {
+    scrollbar-gutter: stable;
+    scrollbar-color: #334155 #090d16;
+    scrollbar-width: thin;
+  }
+
+  body {
+    background-color: #020617;
+    color: #f8fafc;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11", "tnum";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
+    scrollbar-color: #334155 #090d16;
+    scrollbar-width: thin;
+  }
+
+  * {
+    scrollbar-color: #334155 #090d16;
+    scrollbar-width: thin;
+  }
+
+  /* Refined dark mode scrollbars for desktop & all containers */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #090d16;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #334155;
+    border-radius: 9999px;
+    border: 1px solid #090d16;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #475569;
+  }
+}
+
+/* Custom DispatchDesk Leaflet Map Theming */
+.dispatchdesk-map-popup .leaflet-popup-content-wrapper {
+  background-color: #090d16 !important;
+  color: #f1f5f9 !important;
+  border: 1px solid #1e293b !important;
+  border-radius: 0.75rem !important;
+  padding: 0 !important;
+  box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.7), 0 8px 10px -6px rgb(0 0 0 / 0.7) !important;
+}
+
+.dispatchdesk-map-popup .leaflet-popup-content {
+  margin: 0 !important;
+  line-height: inherit !important;
+}
+
+.dispatchdesk-map-popup .leaflet-popup-tip {
+  background-color: #090d16 !important;
+  border: 1px solid #1e293b !important;
+}
+
+.dispatchdesk-map-popup a.leaflet-popup-close-button {
+  color: #94a3b8 !important;
+  padding: 6px 8px !important;
+}
+
+.dispatchdesk-map-popup a.leaflet-popup-close-button:hover {
+  color: #f8fafc !important;
+}
+
+.custom-map-stop-marker {
+  background: transparent !important;
+  border: none !important;
+}
+
+.leaflet-control-attribution {
+  background-color: rgba(9, 13, 22, 0.85) !important;
+  backdrop-filter: blur(4px) !important;
+  color: #94a3b8 !important;
+  font-size: 10px !important;
+  padding: 2px 8px !important;
+  border-top-left-radius: 6px !important;
+  border-left: 1px solid rgba(30, 41, 59, 0.7) !important;
+  border-top: 1px solid rgba(30, 41, 59, 0.7) !important;
+}
+
+.leaflet-control-attribution a {
+  color: #818cf8 !important;
+  text-decoration: none !important;
+}
+
+.leaflet-control-attribution a:hover {
+  text-decoration: underline !important;
+}
+
+/* Date and Time input styling in dark mode */
+input[type="date"],
+input[type="time"] {
+  color-scheme: dark;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="time"]::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  filter: invert(1) brightness(1.2);
+  opacity: 0.95;
+  padding: 4px;
+  margin-right: -2px;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator:hover,
+input[type="time"]::-webkit-calendar-picker-indicator:hover {
+  filter: invert(1) brightness(1.5);
+  opacity: 1;
+  background-color: rgba(99, 102, 241, 0.25);
+}
+

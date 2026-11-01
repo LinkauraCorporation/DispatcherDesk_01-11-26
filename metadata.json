@@ -1,0 +1,6 @@
+{
+  "name": "DispatcherDesk",
+  "description": "DispatcherDesk is the cloud operating system for trucking dispatch agencies to manage clients, fleets, drivers, loads, rate cons, check calls, and profitability.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
