@@ -445,6 +445,13 @@ export const AccessorialTab: React.FC<AccessorialTabProps> = ({ load }) => {
           </div>
         </Modal>
       )}
+
+      {/* AI Detention Audit & Human Review Workspace (Phase 3A) */}
+      <DetentionAuditModal
+        isOpen={isAuditModalOpen}
+        onClose={() => setIsAuditModalOpen(false)}
+        load={load}
+      />
     </div>
   );
 };

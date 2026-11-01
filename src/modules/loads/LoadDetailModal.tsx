@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { LoadWithRelations, PIPELINE_STATUS_OPTIONS } from './loadTypes.ts';
 import { getAllowedTransitions } from '../pipeline/pipelineTypes.ts';
-import { PipelineStatus, DocumentStatus, DocumentType } from '../../types/domain.types.ts';
+import { PipelineStatus, DocumentStatus, DocumentType, LoadDetentionAudit } from '../../types/domain.types.ts';
 import { Modal } from '../../components/common/Modal.tsx';
 import { StatusBadge } from '../../components/common/StatusBadge.tsx';
 import { LoadProfitabilityCard } from './LoadProfitabilityCard.tsx';
@@ -240,6 +240,18 @@ export const LoadDetailModal: React.FC<LoadDetailModalProps> = ({
       fetchTasks();
     }
   }, [isOpen, load, isAuthorized, fetchPaperwork, fetchTracking, fetchTasks]);
+
+  const handleDetentionAuditUpdated = useCallback((_audit: LoadDetentionAudit) => {
+    fetchTracking();
+    fetchPaperwork();
+    fetchTasks();
+    if (load?.id && onCheckCallUpdated) {
+      onCheckCallUpdated(load.id);
+    }
+    if (onDocumentUpdated) {
+      onDocumentUpdated();
+    }
+  }, [fetchTracking, fetchPaperwork, fetchTasks, load?.id, onCheckCallUpdated, onDocumentUpdated]);
 
   const handleOpenCreateReminder = (
     category: TaskCategory = 'general_operational',
@@ -1802,6 +1814,7 @@ export const LoadDetailModal: React.FC<LoadDetailModalProps> = ({
         isOpen={isDetentionAuditOpen}
         onClose={() => setIsDetentionAuditOpen(false)}
         load={load}
+        onAuditUpdated={handleDetentionAuditUpdated}
       />
     </Modal>
   );

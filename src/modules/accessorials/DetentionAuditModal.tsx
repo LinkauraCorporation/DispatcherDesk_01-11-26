@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { LoadWithRelations } from '../loads/loadTypes.ts';
-import { LoadDetentionAudit } from '../../types/database.types.ts';
+import { LoadDetentionAudit } from '../../types/domain.types.ts';
 import {
   AuditStatus,
   HumanReviewStatus,
@@ -342,7 +342,7 @@ export const DetentionAuditModal: React.FC<DetentionAuditModalProps> = ({
     driver: evidenceList.filter((e) => e.sourceType === 'driver_message'),
   };
 
-  const brokerName = load.broker_name || load.client?.company_name || 'Not available';
+  const brokerName = load.broker?.company_name || (load as any).broker_name || load.client?.company_name || 'Not available';
 
   return (
     <Modal

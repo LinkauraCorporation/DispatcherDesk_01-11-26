@@ -894,7 +894,7 @@ export class DetentionAuditService {
         missing_evidence: result.missingEvidence as any,
         reasoning_summary: result.reasoningSummary,
         human_review_status: 'pending',
-        created_by: options?.createdBy || null,
+        created_by: (options?.createdBy && isUUID(options.createdBy)) ? options.createdBy : null,
       };
 
       let persistedRecord: LoadDetentionAudit | null = null;
@@ -1101,7 +1101,7 @@ export class DetentionAuditService {
         const updatePayload: Record<string, any> = {
           human_review_status: reviewData.status,
           human_override_notes: reviewData.notes || null,
-          human_reviewed_by: reviewData.reviewedBy || null,
+          human_reviewed_by: (reviewData.reviewedBy && isUUID(reviewData.reviewedBy)) ? reviewData.reviewedBy : null,
           human_reviewed_by_name: reviewData.reviewerName || null,
           human_reviewed_at: reviewedAt,
           updated_at: reviewedAt,
@@ -1137,7 +1137,7 @@ export class DetentionAuditService {
       ...records[index],
       human_review_status: reviewData.status,
       human_override_notes: reviewData.notes || null,
-      human_reviewed_by: reviewData.reviewedBy || null,
+      human_reviewed_by: (reviewData.reviewedBy && isUUID(reviewData.reviewedBy)) ? reviewData.reviewedBy : null,
       human_reviewed_by_name: reviewData.reviewerName || null,
       human_reviewed_at: reviewedAt,
       updated_at: reviewedAt,
