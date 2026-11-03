@@ -107,6 +107,9 @@ export interface DetentionAuditInput {
     notes: string | null;
     locationCity: string | null;
     locationState: string | null;
+    created_at?: string | null;
+    event_at?: string | null;
+    createdAt?: string | null;
   }>;
 
   documentEvidence: Array<{

@@ -18,6 +18,8 @@ import { useTimezone } from '../../contexts/TimezoneContext.tsx';
 import { formatCurrency } from '../../lib/calculations.ts';
 import { formatInTimezone } from '../../lib/timezones.ts';
 import { DetentionAuditModal } from './DetentionAuditModal.tsx';
+import { detentionAuditService } from './detentionAuditService.ts';
+import { LoadDetentionAudit } from '../../types/domain.types.ts';
 import {
   Receipt,
   Plus,
@@ -69,6 +71,17 @@ export const AccessorialTab: React.FC<AccessorialTabProps> = ({ load }) => {
 
   // Detention Audit Workspace State
   const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
+  const [latestAcceptedAudit, setLatestAcceptedAudit] = useState<LoadDetentionAudit | null>(null);
+
+  const fetchAcceptedAudit = useCallback(async () => {
+    if (!orgId || !load.id) return;
+    try {
+      const audit = await detentionAuditService.getLatestAcceptedAuditForLoad(orgId, load.id);
+      setLatestAcceptedAudit(audit);
+    } catch (err) {
+      console.warn('Error fetching accepted detention audit:', err);
+    }
+  }, [orgId, load.id]);
 
   const fetchLoadClaims = useCallback(async () => {
     if (!orgId || !load.id) return;
@@ -85,7 +98,8 @@ export const AccessorialTab: React.FC<AccessorialTabProps> = ({ load }) => {
 
   useEffect(() => {
     fetchLoadClaims();
-  }, [fetchLoadClaims]);
+    fetchAcceptedAudit();
+  }, [fetchLoadClaims, fetchAcceptedAudit]);
 
   const handleStatusChange = async (claim: AccessorialWithLoad, newStatus: AccessorialStatus) => {
     if (!canEdit) return;
@@ -320,7 +334,11 @@ export const AccessorialTab: React.FC<AccessorialTabProps> = ({ load }) => {
         }}
         load={load}
         claimToEdit={selectedClaimForEdit}
-        onSuccess={() => fetchLoadClaims()}
+        acceptedAudit={latestAcceptedAudit}
+        onSuccess={() => {
+          fetchLoadClaims();
+          fetchAcceptedAudit();
+        }}
       />
 
       {/* Task Modal for Detention & Claim Reminders */}
@@ -449,8 +467,18 @@ export const AccessorialTab: React.FC<AccessorialTabProps> = ({ load }) => {
       {/* AI Detention Audit & Human Review Workspace (Phase 3A) */}
       <DetentionAuditModal
         isOpen={isAuditModalOpen}
-        onClose={() => setIsAuditModalOpen(false)}
+        onClose={() => {
+          setIsAuditModalOpen(false);
+          fetchAcceptedAudit();
+        }}
         load={load}
+        onAuditUpdated={(updatedAudit) => {
+          if (updatedAudit.human_review_status === 'accepted') {
+            setLatestAcceptedAudit(updatedAudit);
+          } else {
+            fetchAcceptedAudit();
+          }
+        }}
       />
     </div>
   );

@@ -437,7 +437,7 @@ class AccessorialService implements IAccessorialService {
     const claims = this.ensureInitialized(organizationId);
     const now = new Date().toISOString();
 
-    let computedAmount = input.amount || ACCESSORIAL_TYPE_CONFIG[input.type]?.defaultRate || 0;
+    let computedAmount = input.amount !== undefined ? input.amount : (ACCESSORIAL_TYPE_CONFIG[input.type]?.defaultRate || 0);
     let formattedDetention: DetentionCalculationResult | null = null;
 
     let detentionDetails = undefined;
@@ -449,7 +449,10 @@ class AccessorialService implements IAccessorialService {
         hourlyRate: input.detention_details.hourly_rate ?? 75.0,
       });
 
-      computedAmount = formattedDetention.totalAmount;
+      // Preserve explicit deterministic verified amount if provided, otherwise use live calculation
+      if (input.amount === undefined) {
+        computedAmount = formattedDetention.totalAmount;
+      }
 
       detentionDetails = {
         facility_type: input.detention_details.facility_type,
@@ -466,7 +469,7 @@ class AccessorialService implements IAccessorialService {
         free_time_hours: input.detention_details.free_time_hours ?? 2.0,
         hourly_rate: input.detention_details.hourly_rate ?? 75.0,
         detention_start_time: formattedDetention.detentionStartTimeIso,
-        billable_hours: formattedDetention.billableHours,
+        billable_hours: input.detention_details.billable_hours !== undefined ? input.detention_details.billable_hours : formattedDetention.billableHours,
         is_active_detention: formattedDetention.isActiveDetention,
         auto_synced_from_checkcall_id: input.detention_details.auto_synced_from_checkcall_id || null,
       };
@@ -481,6 +484,8 @@ class AccessorialService implements IAccessorialService {
       description: input.description.trim(),
       amount: computedAmount,
       currency: input.currency || 'USD',
+      audit_id: input.audit_id || null,
+      audit_version: input.audit_version ?? null,
       detention_details: detentionDetails,
       receipt_doc_id: input.receipt_doc_id || null,
       receipt_doc_name: input.receipt_doc_name || null,
@@ -597,6 +602,8 @@ class AccessorialService implements IAccessorialService {
       ...(input.status !== undefined ? { status: input.status } : {}),
       ...(input.description !== undefined ? { description: input.description.trim() } : {}),
       amount: computedAmount,
+      ...(input.audit_id !== undefined ? { audit_id: input.audit_id } : {}),
+      ...(input.audit_version !== undefined ? { audit_version: input.audit_version } : {}),
       detention_details: detentionDetails,
       ...(input.receipt_doc_id !== undefined ? { receipt_doc_id: input.receipt_doc_id } : {}),
       ...(input.receipt_doc_name !== undefined ? { receipt_doc_name: input.receipt_doc_name } : {}),

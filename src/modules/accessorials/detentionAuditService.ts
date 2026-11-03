@@ -91,6 +91,60 @@ export function getTimeMs(timeStr?: string | Date | null): number | null {
   return isNaN(ms) ? null : ms;
 }
 
+/**
+ * Resolves the authoritative effective event timestamp for a check call during detention audit.
+ *
+ * Operational rules:
+ * 1. Explicit event_at is preserved when it represents the genuine event timestamp (e.g. retroactive
+ *    or concurrent entry where event_at <= created_at).
+ * 2. If event_at is null, empty, or invalid, falls back to created_at.
+ * 3. If created_at is null, empty, or invalid, falls back to event_at.
+ * 4. In freight operations, an arrival or milestone event cannot physically occur in the future
+ *    relative to the database record's creation (e.g. check call created Oct 24, but event_at
+ *    stamped Nov 1 as seen in load AFL-2026-1090 due to an anomalous touch/default). When event_at
+ *    conflicts with created_at (event_at > created_at), created_at represents the genuine physical
+ *    arrival recorded when the check call was logged and is selected.
+ */
+export function resolveCheckCallEffectiveTime(c?: {
+  event_at?: string | Date | null;
+  created_at?: string | Date | null;
+  eventAt?: string | Date | null;
+  createdAt?: string | Date | null;
+  call_type?: string | null;
+  callType?: string | null;
+  [key: string]: any;
+} | null): string | null {
+  if (!c) return null;
+
+  const rawEvent = c.event_at !== undefined ? c.event_at : c.eventAt;
+  const rawCreated = c.created_at !== undefined ? c.created_at : c.createdAt;
+
+  const eventIso = normalizeToIso(rawEvent);
+  const createdIso = normalizeToIso(rawCreated);
+
+  if (!eventIso && !createdIso) return null;
+  if (!eventIso) return createdIso;
+  if (!createdIso) return eventIso;
+
+  const eventMs = getTimeMs(eventIso);
+  const createdMs = getTimeMs(createdIso);
+
+  if (eventMs === null || createdMs === null) {
+    return eventIso || createdIso;
+  }
+
+  // Conflicting timestamps: event_at is in the future relative to the record creation timestamp.
+  // In freight logistics, an in-gate/arrival check call cannot occur after the check call was already logged.
+  // When event_at > created_at, created_at is the authoritative timestamp of when the event was recorded.
+  if (eventMs > createdMs) {
+    return createdIso;
+  }
+
+  // Legitimate explicit event_at (e.g. retroactive logging where event_at <= created_at, or concurrent logging)
+  return eventIso;
+}
+
+
 interface FacilityAuditContext {
   facilityType: 'pickup' | 'delivery';
   appointmentTime: string | null;
@@ -510,8 +564,18 @@ export function auditDetentionEligibility(
       milestoneStart: input.loadContext.pickupLoadingStart,
       milestoneComplete: input.loadContext.pickupLoadingComplete,
       milestoneDeparture: input.loadContext.pickupDeparture,
-      matchingCheckCallArrival: pickupArrivedCall,
-      matchingCheckCallDeparture: pickupDepartedCall,
+      matchingCheckCallArrival: pickupArrivedCall
+        ? {
+            ...pickupArrivedCall,
+            eventAt: resolveCheckCallEffectiveTime(pickupArrivedCall) || pickupArrivedCall.eventAt,
+          }
+        : null,
+      matchingCheckCallDeparture: pickupDepartedCall
+        ? {
+            ...pickupDepartedCall,
+            eventAt: resolveCheckCallEffectiveTime(pickupDepartedCall) || pickupDepartedCall.eventAt,
+          }
+        : null,
       freeTimeHours,
       hourlyRate,
       asOfTime,
@@ -547,8 +611,18 @@ export function auditDetentionEligibility(
       milestoneStart: input.loadContext.deliveryUnloadingStart,
       milestoneComplete: input.loadContext.deliveryUnloadingComplete,
       milestoneDeparture: input.loadContext.deliveryDeparture,
-      matchingCheckCallArrival: deliveryArrivedCall,
-      matchingCheckCallDeparture: deliveryDepartedCall,
+      matchingCheckCallArrival: deliveryArrivedCall
+        ? {
+            ...deliveryArrivedCall,
+            eventAt: resolveCheckCallEffectiveTime(deliveryArrivedCall) || deliveryArrivedCall.eventAt,
+          }
+        : null,
+      matchingCheckCallDeparture: deliveryDepartedCall
+        ? {
+            ...deliveryDepartedCall,
+            eventAt: resolveCheckCallEffectiveTime(deliveryDepartedCall) || deliveryDepartedCall.eventAt,
+          }
+        : null,
       freeTimeHours,
       hourlyRate,
       asOfTime,
@@ -687,26 +761,91 @@ export class DetentionAuditService {
   public async gatherDetentionEvidence(
     organizationId: string,
     loadId: string,
-    options?: { facilityScope?: 'all' | 'pickup' | 'delivery' }
+    options?: {
+      facilityScope?: 'all' | 'pickup' | 'delivery';
+      client?: any;
+    }
   ): Promise<DetentionAuditInput> {
     if (!organizationId || !loadId) {
       throw new Error('Organization ID and Load ID are required to gather detention evidence.');
     }
 
-    // 1. Fetch authorized load
-    const load = await loadService.getLoadById(organizationId, loadId);
+    const client = options?.client;
+    let load: any = null;
+
+    if (client) {
+      try {
+        const { data: loadRow, error: loadErr } = await client
+          .from('loads')
+          .select('*')
+          .eq('id', loadId)
+          .eq('organization_id', organizationId)
+          .maybeSingle();
+
+        if (!loadErr && loadRow) {
+          load = loadRow;
+        }
+      } catch (clientErr) {
+        console.warn('[gatherDetentionEvidence] Client query load error:', clientErr);
+      }
+    }
+
+    // Fallback to loadService if not retrieved via client
+    if (!load) {
+      load = await loadService.getLoadById(organizationId, loadId);
+    }
+
     if (!load || load.organization_id !== organizationId) {
       throw new Error('Load not found or unauthorized for the current organization.');
     }
 
     // 2. Fetch check calls
-    const checkCalls = await checkCallService.getCheckCalls(organizationId, loadId);
+    let checkCalls: any[] = [];
+    if (client) {
+      try {
+        const { data: ccData, error: ccErr } = await client
+          .from('check_calls')
+          .select('*')
+          .eq('load_id', loadId)
+          .eq('organization_id', organizationId)
+          .order('created_at', { ascending: true });
+        if (!ccErr && ccData) {
+          checkCalls = ccData;
+        }
+      } catch (ccErr) {
+        console.warn('[gatherDetentionEvidence] Client query check_calls error:', ccErr);
+      }
+    }
+    if (checkCalls.length === 0) {
+      try {
+        checkCalls = await checkCallService.getCheckCalls(organizationId, loadId);
+      } catch {
+        checkCalls = [];
+      }
+    }
 
     // 3. Fetch documents
-    const documents = await documentService.listDocuments(organizationId, { load_id: loadId });
+    let documents: any[] = [];
+    if (client) {
+      try {
+        const { data: docData, error: docErr } = await client
+          .from('documents')
+          .select('*')
+          .eq('load_id', loadId)
+          .eq('organization_id', organizationId);
+        if (!docErr && docData) {
+          documents = docData;
+        }
+      } catch (docErr) {
+        console.warn('[gatherDetentionEvidence] Client query documents error:', docErr);
+      }
+    }
+    if (documents.length === 0 && !client) {
+      documents = await documentService.listDocuments(organizationId, { load_id: loadId });
+    }
 
     // 4. RateCon terms extraction or defaults
-    const rateConDoc = documents.find((d) => d.doc_type === 'rate_confirmation');
+    const rateConDoc = documents.find((d: any) => d.doc_type === 'rate_confirmation');
     let freeTimeHours: number = 2.0;
     let hourlyRate: number = 75.0;
     let hasRateCon = Boolean(rateConDoc);
@@ -725,7 +864,25 @@ export class DetentionAuditService {
     }
 
     // Also check if any existing detention record has established agreed terms
-    const detentionRecords = await accessorialService.getDetentionRecords(organizationId, loadId);
+    let detentionRecords: any[] = [];
+    if (client) {
+      try {
+        const { data: detData, error: detErr } = await client
+          .from('load_detention_records')
+          .select('*')
+          .eq('load_id', loadId)
+          .eq('organization_id', organizationId)
+          .order('created_at', { ascending: false });
+        if (!detErr && detData) {
+          detentionRecords = detData;
+        }
+      } catch (detErr) {
+        console.warn('[gatherDetentionEvidence] Client query detention_records error:', detErr);
+      }
+    }
+    if (detentionRecords.length === 0 && !client) {
+      detentionRecords = await accessorialService.getDetentionRecords(organizationId, loadId);
+    }
     if (detentionRecords && detentionRecords.length > 0) {
       const latestDet = detentionRecords[0];
       if (latestDet.hourly_rate && latestDet.hourly_rate > 0) {
@@ -779,15 +936,23 @@ export class DetentionAuditService {
         detentionNoticeTerms: null,
         specialInstructions,
       },
-      checkCalls: checkCalls.map((c) => ({
-        id: c.id,
-        callType: c.call_type,
-        status: c.status,
-        eventAt: c.event_at || c.created_at,
-        notes: c.notes,
-        locationCity: c.location_city,
-        locationState: c.location_state,
-      })),
+      checkCalls: checkCalls
+        .map((c) => ({
+          id: c.id,
+          callType: c.call_type || c.callType,
+          status: c.status,
+          eventAt: resolveCheckCallEffectiveTime(c) || c.created_at || c.event_at || '',
+          notes: c.notes,
+          locationCity: c.location_city || c.locationCity || null,
+          locationState: c.location_state || c.locationState || null,
+          created_at: c.created_at || c.createdAt || null,
+          event_at: c.event_at || c.eventAt || null,
+        }))
+        .sort((a, b) => {
+          const aMs = getTimeMs(a.eventAt) ?? 0;
+          const bMs = getTimeMs(b.eventAt) ?? 0;
+          return aMs - bMs;
+        }),
       documentEvidence: documents.map((d) => ({
         id: d.id,
         docType: (d.doc_type as 'rate_confirmation' | 'bol' | 'pod' | 'invoice' | 'other') || 'other',
@@ -852,7 +1017,7 @@ export class DetentionAuditService {
   public async saveAuditResult(
     organizationId: string,
     result: DetentionAuditResult,
-    options?: { detentionRecordId?: string; createdBy?: string; auditVersion?: number }
+    options?: { detentionRecordId?: string; createdBy?: string; auditVersion?: number; client?: any }
   ): Promise<LoadDetentionAudit> {
     if (!organizationId || !result.loadId) {
       throw new Error('Organization ID and Load ID are required to persist a detention audit.');
@@ -898,11 +1063,12 @@ export class DetentionAuditService {
       };
 
       let persistedRecord: LoadDetentionAudit | null = null;
+      const dbClient = options?.client || supabase;
 
       if (isSupabaseConfigured && isUUID(organizationId) && isUUID(result.loadId)) {
         try {
           // 1. Primary approach: atomic database RPC with pg_advisory_xact_lock
-          const { data, error } = await (supabase.rpc as any)('save_load_detention_audit_atomic', {
+          const { data, error } = await (dbClient.rpc as any)('save_load_detention_audit_atomic', {
             p_audit_data: payloadToInsert,
           });
 
@@ -911,7 +1077,7 @@ export class DetentionAuditService {
           } else if (error) {
             // If RPC is missing in remote database schema (e.g. migration pending), fallback to direct insert with retry
             if (error.code === 'PGRST202' || error.message?.includes('function') || error.message?.includes('not found')) {
-              persistedRecord = await this.saveAuditDirectWithRetry(organizationId, result.loadId, payloadToInsert);
+              persistedRecord = await this.saveAuditDirectWithRetry(organizationId, result.loadId, payloadToInsert, 3, dbClient);
             } else {
               console.error('[DetentionAuditService] Supabase atomic RPC error:', error);
               throw new Error(error.message || 'Database error saving detention audit.');
@@ -973,13 +1139,15 @@ export class DetentionAuditService {
     organizationId: string,
     loadId: string,
     payload: LoadDetentionAuditInsert,
-    maxRetries = 3
+    maxRetries = 3,
+    customClient?: any
   ): Promise<LoadDetentionAudit | null> {
+    const client = customClient || supabase;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
         let versionToUse = payload.audit_version;
         if (!versionToUse) {
-          const { data: latestRows } = await (supabase.from('load_detention_audits' as any) as any)
+          const { data: latestRows } = await (client.from('load_detention_audits' as any) as any)
             .select('audit_version')
             .eq('load_id', loadId)
             .order('audit_version', { ascending: false })
@@ -992,7 +1160,7 @@ export class DetentionAuditService {
         }
 
         const toInsert = { ...payload, audit_version: versionToUse };
-        const { data, error } = await (supabase.from('load_detention_audits' as any) as any)
+        const { data, error } = await (client.from('load_detention_audits' as any) as any)
           .insert(toInsert)
           .select()
           .single();
@@ -1052,6 +1220,14 @@ export class DetentionAuditService {
   public async getLatestAuditForLoad(organizationId: string, loadId: string): Promise<LoadDetentionAudit | null> {
     const audits = await this.getAuditsByLoad(organizationId, loadId);
     return audits.length > 0 ? audits[0] : null;
+  }
+
+  /**
+   * Retrieves the latest accepted detention audit for a load.
+   */
+  public async getLatestAcceptedAuditForLoad(organizationId: string, loadId: string): Promise<LoadDetentionAudit | null> {
+    const audits = await this.getAuditsByLoad(organizationId, loadId);
+    return audits.find((a) => a.human_review_status === 'accepted') || null;
   }
 
   /**

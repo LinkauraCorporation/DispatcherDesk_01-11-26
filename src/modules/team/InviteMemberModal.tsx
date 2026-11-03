@@ -46,6 +46,7 @@ export const InviteMemberModal: React.FC<InviteMemberModalProps> = ({
     inviteUrl: string;
     rawToken: string;
   } | null>(null);
+  const [emailDeliveryStatus, setEmailDeliveryStatus] = useState<'sent' | 'fallback_required' | null>(null);
   const [copied, setCopied] = useState(false);
 
   // Sync props when opening modal
@@ -55,6 +56,7 @@ export const InviteMemberModal: React.FC<InviteMemberModalProps> = ({
       setRole(initialRole && initialRole !== 'driver' ? initialRole : 'dispatcher');
       setErrorMessage(null);
       setCreatedInvite(null);
+      setEmailDeliveryStatus(null);
       setCopied(false);
       setIsLoading(false);
     }
@@ -65,6 +67,7 @@ export const InviteMemberModal: React.FC<InviteMemberModalProps> = ({
     setRole('dispatcher');
     setErrorMessage(null);
     setCreatedInvite(null);
+    setEmailDeliveryStatus(null);
     setCopied(false);
     setIsLoading(false);
   };
@@ -96,20 +99,30 @@ export const InviteMemberModal: React.FC<InviteMemberModalProps> = ({
 
       setCreatedInvite(result);
 
-      const { error: emailError } = await supabase.functions.invoke('send-team-invitation', {
-        body: {
-          email: result.invitation.email,
-          organizationName: activeOrganization.name,
-          role: result.invitation.role,
-          inviteUrl: result.inviteUrl,
-          expiresAt: result.invitation.expires_at,
-        },
-      });
+      let emailSent = false;
+      try {
+        const { data: emailData, error: emailError } = await supabase.functions.invoke('send-team-invitation', {
+          body: {
+            email: result.invitation.email,
+            organizationName: activeOrganization.name,
+            role: result.invitation.role,
+            inviteUrl: result.inviteUrl,
+            expiresAt: result.invitation.expires_at,
+          },
+        });
 
-      if (emailError) {
-        console.error('Invitation created but email failed:', emailError);
-        setErrorMessage('Invitation created, but the email could not be sent. You can still share the secure invitation link below.');
+        if (!emailError && (emailData?.success || (!emailData?.error && !emailError))) {
+          emailSent = true;
+        } else {
+          console.warn('send-team-invitation invocation returned non-success or error:', emailError || emailData);
+        }
+      } catch (invokeErr) {
+        console.warn('send-team-invitation invocation exception:', invokeErr);
+        emailSent = false;
       }
+
+      setEmailDeliveryStatus(emailSent ? 'sent' : 'fallback_required');
+
       if (onInvitationCreated) {
         onInvitationCreated(result.invitation);
       }
@@ -148,17 +161,37 @@ export const InviteMemberModal: React.FC<InviteMemberModalProps> = ({
       {createdInvite ? (
         /* Success & Link View */
         <div className="space-y-4 text-xs">
-          <div className="p-3.5 rounded-lg bg-emerald-950/40 border border-emerald-800/60 text-emerald-200 flex items-start gap-3">
-            <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
-            <div>
-              <p className="font-semibold text-emerald-100 text-sm">
-                Invitation Generated Successfully
-              </p>
-              <p className="text-emerald-300/90 mt-0.5 leading-relaxed">
-                An invitation for <strong className="text-white">{createdInvite.invitation.email}</strong> with the <strong className="text-white">{createdInvite.invitation.role}</strong> role has been created.
-              </p>
+          {emailDeliveryStatus === 'sent' ? (
+            <div
+              id="invitation-email-sent-banner"
+              className="p-3.5 rounded-lg bg-emerald-950/40 border border-emerald-800/60 text-emerald-200 flex items-start gap-3"
+            >
+              <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-semibold text-emerald-100 text-sm">
+                  Invitation Email Sent Successfully
+                </p>
+                <p className="text-emerald-300/90 mt-0.5 leading-relaxed">
+                  An invitation email has been delivered to <strong className="text-white">{createdInvite.invitation.email}</strong> for the <strong className="text-white">{createdInvite.invitation.role.replace('_', ' ')}</strong> role. You can also copy the backup link below if needed.
+                </p>
+              </div>
             </div>
-          </div>
+          ) : (
+            <div
+              id="invitation-email-fallback-banner"
+              className="p-3.5 rounded-lg bg-amber-950/40 border border-amber-800/60 text-amber-200 flex items-start gap-3"
+            >
+              <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-semibold text-amber-100 text-sm">
+                  Email Delivery Unavailable — Share Link Directly
+                </p>
+                <p className="text-amber-300/90 mt-0.5 leading-relaxed">
+                  The invitation was generated successfully, but automated email delivery is not configured or could not be reached. <strong>Please copy and share the secure single-use invitation link below directly</strong> with <strong className="text-white">{createdInvite.invitation.email}</strong>.
+                </p>
+              </div>
+            </div>
+          )}
 
           <div className="bg-slate-950 border border-slate-800 rounded-lg p-4 space-y-3">
             <div className="flex items-center justify-between text-slate-400">

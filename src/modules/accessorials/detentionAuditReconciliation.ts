@@ -60,9 +60,38 @@ export const VALID_FACILITY_STATUSES = new Set<FacilityAuditStatus>([
 export interface GroundTruth {
   knownTimestamps: Set<string>;
   knownSourceReferences: Set<string>;
+  knownCheckCallIds: Set<string>;
   knownDocumentIds: Set<string>;
+  knownActivityNoteIds: Set<string>;
+  knownDriverMessageIds: Set<string>;
   knownRates: Set<number>;
   knownFreeTimes: Set<number>;
+}
+
+export const ALLOWED_SEVERITIES = ['blocker', 'warning', 'info'] as const;
+export type DiscrepancySeverity = (typeof ALLOWED_SEVERITIES)[number];
+
+/**
+ * Normalizes discrepancy severity values to the strict application domain enum:
+ * 'blocker' | 'warning' | 'info'
+ * Maps high-impact synonyms (e.g. 'critical', 'high', 'fatal') to 'blocker',
+ * medium-impact synonyms (e.g. 'medium', 'warn') to 'warning',
+ * and low-impact synonyms (e.g. 'low', 'notice', 'informational') to 'info'.
+ * Returns null for any unsupported or arbitrary value (which will be rejected).
+ */
+export function normalizeDiscrepancySeverity(rawSeverity: any): DiscrepancySeverity | null {
+  if (typeof rawSeverity !== 'string') return null;
+  const s = rawSeverity.trim().toLowerCase();
+  if (s === 'blocker' || s === 'critical' || s === 'high' || s === 'fatal') {
+    return 'blocker';
+  }
+  if (s === 'warning' || s === 'warn' || s === 'medium') {
+    return 'warning';
+  }
+  if (s === 'info' || s === 'informational' || s === 'low' || s === 'notice') {
+    return 'info';
+  }
+  return null;
 }
 
 /**
@@ -75,7 +104,10 @@ export function collectGroundTruth(
 ): GroundTruth {
   const knownTimestamps = new Set<string>();
   const knownSourceReferences = new Set<string>();
+  const knownCheckCallIds = new Set<string>();
   const knownDocumentIds = new Set<string>();
+  const knownActivityNoteIds = new Set<string>();
+  const knownDriverMessageIds = new Set<string>();
   const knownRates = new Set<number>();
   const knownFreeTimes = new Set<number>();
 
@@ -110,33 +142,54 @@ export function collectGroundTruth(
   knownSourceReferences.add('rate_con.terms');
   knownSourceReferences.add('rate_con.notes');
   knownSourceReferences.add('rate_con.special_instructions');
+  knownSourceReferences.add('rate_confirmation');
   knownSourceReferences.add('deterministic_audit');
+  knownSourceReferences.add('documents.pod');
+  knownSourceReferences.add('documents.bol');
 
   // Check calls
   input.checkCalls.forEach((c) => {
     addTs(c.eventAt);
-    knownSourceReferences.add(`check_calls.${c.id}`);
+    if (c.id) {
+      knownCheckCallIds.add(c.id);
+      knownSourceReferences.add(c.id);
+      knownSourceReferences.add(`check_calls.${c.id}`);
+      knownSourceReferences.add(`check_call.${c.id}`);
+    }
   });
 
   // Document evidence
   input.documentEvidence.forEach((d) => {
     addTs(d.uploadedAt);
-    knownDocumentIds.add(d.id);
-    knownSourceReferences.add(`documents.${d.id}`);
-    knownSourceReferences.add(`bol_pod.${d.id}`);
-    knownSourceReferences.add(`rate_con.${d.id}`);
+    if (d.id) {
+      knownDocumentIds.add(d.id);
+      knownSourceReferences.add(d.id);
+      knownSourceReferences.add(`documents.${d.id}`);
+      knownSourceReferences.add(`bol_pod.${d.id}`);
+      knownSourceReferences.add(`rate_con.${d.id}`);
+    }
   });
 
   // Activity notes
   input.activityNotes.forEach((a) => {
     addTs(a.timestamp);
-    knownSourceReferences.add(`activity_notes.${a.id}`);
+    if (a.id) {
+      knownActivityNoteIds.add(a.id);
+      knownSourceReferences.add(a.id);
+      knownSourceReferences.add(`activity_notes.${a.id}`);
+      knownSourceReferences.add(`activity_note.${a.id}`);
+    }
   });
 
   // Driver messages
   input.driverMessages.forEach((m) => {
     addTs(m.timestamp);
-    knownSourceReferences.add(`driver_messages.${m.id}`);
+    if (m.id) {
+      knownDriverMessageIds.add(m.id);
+      knownSourceReferences.add(m.id);
+      knownSourceReferences.add(`driver_messages.${m.id}`);
+      knownSourceReferences.add(`driver_message.${m.id}`);
+    }
   });
 
   // Deterministic result timestamps & evidence
@@ -155,6 +208,15 @@ export function collectGroundTruth(
   deterministicResult.evidence.forEach((ev) => {
     addTs(ev.timestamp);
     knownSourceReferences.add(ev.sourceReference);
+    if (ev.sourceReference.startsWith('check_calls.')) {
+      const ccId = ev.sourceReference.replace(/^check_calls\./, '');
+      knownCheckCallIds.add(ccId);
+      knownSourceReferences.add(ccId);
+    } else if (ev.sourceReference.startsWith('documents.')) {
+      const docId = ev.sourceReference.replace(/^documents\./, '');
+      knownDocumentIds.add(docId);
+      knownSourceReferences.add(docId);
+    }
   });
 
   // Known hourly rates
@@ -182,7 +244,10 @@ export function collectGroundTruth(
   return {
     knownTimestamps,
     knownSourceReferences,
+    knownCheckCallIds,
     knownDocumentIds,
+    knownActivityNoteIds,
+    knownDriverMessageIds,
     knownRates,
     knownFreeTimes,
   };
@@ -402,25 +467,59 @@ export function validateGrounding(
           errors.push(`evidence[${idx}] missing sourceReference.`);
         } else {
           const ref = ev.sourceReference.trim();
-          const isKnownRef =
-            groundTruth.knownSourceReferences.has(ref) ||
-            ref.startsWith('loads.') ||
-            ref.startsWith('rate_con') ||
-            ref.startsWith('check_calls.') ||
-            ref.startsWith('documents.') ||
-            ref.startsWith('activity_notes.') ||
-            ref.startsWith('driver_messages.');
+          let isValidRef = false;
+          let normalizedRef = ref;
 
-          if (!isKnownRef) {
-            errors.push(`evidence[${idx}] unsupported sourceReference: "${ref}". AI cannot invent source references.`);
-          }
-
-          // Document ID grounding check
-          if (ref.startsWith('documents.') || ref.startsWith('bol_pod.')) {
+          // Check if it directly matches an authoritative known source reference
+          if (groundTruth.knownSourceReferences.has(ref)) {
+            isValidRef = true;
+            if (groundTruth.knownCheckCallIds.has(ref)) {
+              normalizedRef = `check_calls.${ref}`;
+            } else if (groundTruth.knownDocumentIds.has(ref)) {
+              normalizedRef = `documents.${ref}`;
+            } else if (groundTruth.knownActivityNoteIds.has(ref)) {
+              normalizedRef = `activity_notes.${ref}`;
+            } else if (groundTruth.knownDriverMessageIds.has(ref)) {
+              normalizedRef = `driver_messages.${ref}`;
+            }
+          } else if (ref.startsWith('check_calls.') || ref.startsWith('check_call.')) {
+            const ccId = ref.replace(/^check_calls?\./, '');
+            if (groundTruth.knownCheckCallIds.has(ccId)) {
+              isValidRef = true;
+              normalizedRef = `check_calls.${ccId}`;
+            } else {
+              errors.push(`evidence[${idx}] unsupported check call ID: "${ccId}". AI cannot invent source references.`);
+            }
+          } else if (ref.startsWith('documents.') || ref.startsWith('bol_pod.')) {
             const docId = ref.replace(/^(documents\.|bol_pod\.)/, '');
-            if (!groundTruth.knownDocumentIds.has(docId)) {
+            if (groundTruth.knownDocumentIds.has(docId)) {
+              isValidRef = true;
+              normalizedRef = `documents.${docId}`;
+            } else {
               errors.push(`evidence[${idx}] unsupported document ID: "${docId}".`);
             }
+          } else if (ref.startsWith('activity_notes.') || ref.startsWith('activity_note.')) {
+            const noteId = ref.replace(/^activity_notes?\./, '');
+            if (groundTruth.knownActivityNoteIds.has(noteId)) {
+              isValidRef = true;
+              normalizedRef = `activity_notes.${noteId}`;
+            } else {
+              errors.push(`evidence[${idx}] unsupported activity note ID: "${noteId}".`);
+            }
+          } else if (ref.startsWith('driver_messages.') || ref.startsWith('driver_message.')) {
+            const msgId = ref.replace(/^driver_messages?\./, '');
+            if (groundTruth.knownDriverMessageIds.has(msgId)) {
+              isValidRef = true;
+              normalizedRef = `driver_messages.${msgId}`;
+            } else {
+              errors.push(`evidence[${idx}] unsupported driver message ID: "${msgId}".`);
+            }
+          }
+
+          if (!isValidRef && !errors.some((e) => e.startsWith(`evidence[${idx}]`))) {
+            errors.push(`evidence[${idx}] unsupported sourceReference: "${ref}". AI cannot invent source references.`);
+          } else if (isValidRef) {
+            ev.sourceReference = normalizedRef;
           }
         }
 
@@ -460,17 +559,41 @@ export function validateGrounding(
         if (!disc.code || !VALID_DISCREPANCY_CODES.has(disc.code)) {
           errors.push(`discrepancies[${idx}] invalid discrepancy code: "${disc.code}".`);
         }
-        if (disc.severity && !['blocker', 'warning', 'info'].includes(disc.severity)) {
-          errors.push(`discrepancies[${idx}] invalid severity: "${disc.severity}".`);
+        if (!disc.severity) {
+          errors.push(`discrepancies[${idx}] missing severity. Must be one of: blocker, warning, info.`);
+        } else {
+          const normSeverity = normalizeDiscrepancySeverity(disc.severity);
+          if (!normSeverity) {
+            errors.push(`discrepancies[${idx}] invalid severity: "${disc.severity}". Must be one of: blocker, warning, info.`);
+          } else {
+            disc.severity = normSeverity;
+          }
         }
         if (Array.isArray(disc.conflictingSources)) {
-          disc.conflictingSources.forEach((src: any) => {
-            if (typeof src === 'string' && src.startsWith('documents.')) {
-              const docId = src.replace(/^documents\./, '');
-              if (!groundTruth.knownDocumentIds.has(docId)) {
-                errors.push(`discrepancies[${idx}] conflictingSource references unknown document: "${docId}".`);
+          disc.conflictingSources = disc.conflictingSources.map((src: any) => {
+            if (typeof src === 'string') {
+              const trimmedSrc = src.trim();
+              if (groundTruth.knownCheckCallIds.has(trimmedSrc)) {
+                return `check_calls.${trimmedSrc}`;
               }
+              if (groundTruth.knownDocumentIds.has(trimmedSrc)) {
+                return `documents.${trimmedSrc}`;
+              }
+              if (trimmedSrc.startsWith('documents.')) {
+                const docId = trimmedSrc.replace(/^documents\./, '');
+                if (!groundTruth.knownDocumentIds.has(docId)) {
+                  errors.push(`discrepancies[${idx}] conflictingSource references unknown document: "${docId}".`);
+                }
+              }
+              if (trimmedSrc.startsWith('check_calls.')) {
+                const ccId = trimmedSrc.replace(/^check_calls\./, '');
+                if (!groundTruth.knownCheckCallIds.has(ccId)) {
+                  errors.push(`discrepancies[${idx}] conflictingSource references unknown check call: "${ccId}".`);
+                }
+              }
+              return trimmedSrc;
             }
+            return src;
           });
         }
       });
@@ -529,9 +652,12 @@ export function protectAndReconcileResult(
   // Merge evidence without duplicates
   const mergedEvidence: AuditEvidenceItem[] = [...deterministicResult.evidence];
   if (Array.isArray(validatedAi?.evidence)) {
-    validatedAi.evidence.forEach((aiEv: AuditEvidenceItem) => {
+    validatedAi.evidence.forEach((aiEv: AuditEvidenceItem, idx: number) => {
       if (!mergedEvidence.some((e) => e.sourceReference === aiEv.sourceReference && e.timestamp === aiEv.timestamp)) {
-        mergedEvidence.push(aiEv);
+        mergedEvidence.push({
+          ...aiEv,
+          id: aiEv.id || `ev-ai-${idx}-${Date.now().toString(36)}`,
+        });
       }
     });
   }

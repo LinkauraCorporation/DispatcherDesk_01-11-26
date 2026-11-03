@@ -131,6 +131,25 @@ export interface AIContextFinancials {
   activeLoadsCount: number;
 }
 
+// Grounded authoritative detention audit details
+export interface AIContextDetentionAudit {
+  id: string;
+  loadId: string;
+  auditVersion: number;
+  auditStatus: string;
+  humanReviewStatus: string;
+  facilityType: 'pickup' | 'delivery';
+  facilityName: string;
+  arrivalFormatted: string;
+  detentionStartFormatted: string;
+  departureFormatted: string;
+  freeTimeHours: number;
+  billableHours: number;
+  hourlyRate: number;
+  verifiedAmount: number;
+  verifiedAmountFormatted: string;
+}
+
 // Aggregated context passed into AI prompts or local templates
 export interface AIContext {
   organizationId: string;
@@ -150,6 +169,9 @@ export interface AIContext {
   taskStats?: { totalActive: number; overdueCount: number; dueTodayCount: number };
   operationalAlerts: string[];
   
+  // Authoritative accepted detention audit for targeted load (if any)
+  detentionAudit?: AIContextDetentionAudit;
+
   // Role-gated financial stats (undefined if not authorized)
   financials?: AIContextFinancials;
 }

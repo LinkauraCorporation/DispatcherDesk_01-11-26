@@ -28,7 +28,9 @@ import {
   Truck,
   Timer,
   AlertTriangle,
+  ShieldCheck,
 } from 'lucide-react';
+import { LoadDetentionAudit } from '../../types/domain.types.ts';
 
 export interface AccessorialModalProps {
   isOpen: boolean;
@@ -36,6 +38,7 @@ export interface AccessorialModalProps {
   load?: LoadWithRelations | null;
   claimToEdit?: AccessorialClaim | null;
   onSuccess: (claim: AccessorialClaim, isEdit: boolean) => void;
+  acceptedAudit?: LoadDetentionAudit | null;
 }
 
 export const AccessorialModal: React.FC<AccessorialModalProps> = ({
@@ -44,6 +47,7 @@ export const AccessorialModal: React.FC<AccessorialModalProps> = ({
   load: preselectedLoad,
   claimToEdit,
   onSuccess,
+  acceptedAudit,
 }) => {
   const { activeOrganization, user, profile, userRole } = useAuth();
   const { operationalTimezone } = useTimezone();
@@ -55,6 +59,19 @@ export const AccessorialModal: React.FC<AccessorialModalProps> = ({
   // Loads list for selector if not preselected
   const [availableLoads, setAvailableLoads] = useState<LoadWithRelations[]>([]);
   const [selectedLoadId, setSelectedLoadId] = useState<string>('');
+
+  // Accepted Audit Prefill Traceability State
+  const [auditPrefillMeta, setAuditPrefillMeta] = useState<{
+    auditId: string;
+    version: number;
+    verifiedAmount: number;
+    billableHours: number;
+    facilityType: FacilityStopType;
+    totalDwellHours: number;
+    freeHours: number;
+    rate: number;
+  } | null>(null);
+  const [isDetentionManuallyEdited, setIsDetentionManuallyEdited] = useState(false);
 
   // Core Form State
   const [type, setType] = useState<AccessorialType>('detention');
@@ -122,6 +139,24 @@ export const AccessorialModal: React.FC<AccessorialModalProps> = ({
 
     setError(null);
     if (claimToEdit) {
+      setAuditPrefillMeta(
+        claimToEdit.audit_id && claimToEdit.audit_version
+          ? {
+              auditId: claimToEdit.audit_id,
+              version: claimToEdit.audit_version,
+              verifiedAmount: claimToEdit.amount,
+              billableHours: claimToEdit.detention_details?.billable_hours ?? 0,
+              facilityType: claimToEdit.detention_details?.facility_type ?? 'pickup',
+              totalDwellHours:
+                (claimToEdit.detention_details?.billable_hours ?? 0) +
+                (claimToEdit.detention_details?.free_time_hours ?? 2.0),
+              freeHours: claimToEdit.detention_details?.free_time_hours ?? 2.0,
+              rate: claimToEdit.detention_details?.hourly_rate ?? 75.0,
+            }
+          : null
+      );
+      setIsDetentionManuallyEdited(false);
+
       setType(claimToEdit.type);
       setStatus(claimToEdit.status);
       setDescription(claimToEdit.description);
@@ -154,55 +189,176 @@ export const AccessorialModal: React.FC<AccessorialModalProps> = ({
       setRejectionReason(claimToEdit.rejection_reason || '');
       setNotes(claimToEdit.notes || '');
     } else {
-      // New Claim defaults
-      setType('detention');
-      setStatus('draft');
-      setDescription('Detention at receiver dock during unloading.');
-      setAmount('75.00');
-      setSelectedLoadId(preselectedLoad ? preselectedLoad.id : availableLoads[0]?.id || '');
+      // New Claim: Check if an accepted detention audit exists for this load
+      if (acceptedAudit && acceptedAudit.human_review_status === 'accepted') {
+        const hasPickup = Boolean(
+          acceptedAudit.pickup_verified_amount > 0 ||
+          acceptedAudit.pickup_billable_hours > 0 ||
+          acceptedAudit.pickup_status === 'eligible'
+        );
+        const hasDelivery = Boolean(
+          acceptedAudit.delivery_verified_amount > 0 ||
+          acceptedAudit.delivery_billable_hours > 0 ||
+          acceptedAudit.delivery_status === 'eligible'
+        );
 
-      const nowLocal = toLocalInputValue(new Date().toISOString(), operationalTimezone);
-      const twoHoursAgoLocal = toLocalInputValue(new Date(Date.now() - 3.5 * 3600000).toISOString(), operationalTimezone);
-      setArrivalTime(twoHoursAgoLocal);
-      setIsStillAtDock(true);
-      setDepartureTime(nowLocal);
-      setLoadingStartTime('');
-      setLoadingCompleteTime('');
-      setUnloadingStartTime('');
-      setUnloadingCompleteTime('');
-      setFreeTimeHours('2.0');
-      setHourlyRate('75.00');
+        // Determine audited facility
+        const isDeliveryFacility =
+          (hasDelivery && !hasPickup) ||
+          (hasDelivery && acceptedAudit.delivery_verified_amount > acceptedAudit.pickup_verified_amount) ||
+          (!acceptedAudit.pickup_arrival_time && Boolean(acceptedAudit.delivery_arrival_time));
 
-      if (preselectedLoad) {
-        setFacilityType('pickup');
-        setFacilityName(`${preselectedLoad.origin_city}, ${preselectedLoad.origin_state} (Shipper)`);
-        setFacilityAddress(`${preselectedLoad.origin_city}, ${preselectedLoad.origin_state}`);
-        setBrokerName(preselectedLoad.broker?.company_name || '');
-        setBrokerContactPerson(preselectedLoad.broker?.contact_name || '');
-        setBrokerContactEmail(preselectedLoad.broker?.contact_email || '');
-        setBrokerContactPhone(preselectedLoad.broker?.contact_phone || '');
+        const targetFacilityType: FacilityStopType = isDeliveryFacility ? 'delivery' : 'pickup';
+        const arrIso = isDeliveryFacility ? acceptedAudit.delivery_arrival_time : acceptedAudit.pickup_arrival_time;
+        let depIso = isDeliveryFacility ? acceptedAudit.delivery_departure_time : acceptedAudit.pickup_departure_time;
+        const detEndIso = isDeliveryFacility ? acceptedAudit.delivery_detention_end : acceptedAudit.pickup_detention_end;
+        const freeHours = isDeliveryFacility
+          ? (acceptedAudit.delivery_free_time_hours ?? 2.0)
+          : (acceptedAudit.pickup_free_time_hours ?? 2.0);
+        const rate = isDeliveryFacility
+          ? (acceptedAudit.delivery_hourly_rate ?? 75.0)
+          : (acceptedAudit.pickup_hourly_rate ?? 75.0);
+        const verifiedAmt = isDeliveryFacility
+          ? (acceptedAudit.delivery_verified_amount ?? 0)
+          : (acceptedAudit.pickup_verified_amount ?? 0);
+        const auditedHours = isDeliveryFacility
+          ? (acceptedAudit.delivery_billable_hours ?? 0)
+          : (acceptedAudit.pickup_billable_hours ?? 0);
+
+        // Resolve departure timestamp:
+        // If explicit departure is missing, fallback to detention_end or compute from arrival + dwell
+        if (!depIso && detEndIso) {
+          depIso = detEndIso;
+        }
+        if (!depIso && arrIso && (auditedHours > 0 || freeHours > 0)) {
+          depIso = new Date(new Date(arrIso).getTime() + (freeHours + auditedHours) * 3600000).toISOString();
+        }
+
+        const totalDwellHours = auditedHours + freeHours;
+
+        setType('detention');
+        setStatus('draft');
+        setSelectedLoadId(preselectedLoad ? preselectedLoad.id : availableLoads[0]?.id || '');
+        setFacilityType(targetFacilityType);
+
+        const targetFacilityName = isDeliveryFacility
+          ? (preselectedLoad?.dest_facility_name || (preselectedLoad ? `${preselectedLoad.dest_city}, ${preselectedLoad.dest_state} (Receiver)` : 'Receiver Facility'))
+          : (preselectedLoad?.origin_facility_name || (preselectedLoad ? `${preselectedLoad.origin_city}, ${preselectedLoad.origin_state} (Shipper)` : 'Shipper Facility'));
+
+        const targetFacilityAddress = isDeliveryFacility
+          ? (preselectedLoad?.dest_address || (preselectedLoad ? `${preselectedLoad.dest_city}, ${preselectedLoad.dest_state}` : ''))
+          : (preselectedLoad?.origin_address || (preselectedLoad ? `${preselectedLoad.origin_city}, ${preselectedLoad.origin_state}` : ''));
+
+        setFacilityName(targetFacilityName);
+        setFacilityAddress(targetFacilityAddress);
+        setArrivalTime(arrIso ? toLocalInputValue(arrIso, operationalTimezone) : '');
+        setIsStillAtDock(false); // Accepted audit is a concluded, verified event — driver is not actively accruing live detention
+        setDepartureTime(depIso ? toLocalInputValue(depIso, operationalTimezone) : '');
+        setLoadingStartTime('');
+        setLoadingCompleteTime('');
+        setUnloadingStartTime('');
+        setUnloadingCompleteTime('');
+        setFreeTimeHours(freeHours.toString());
+        setHourlyRate(rate.toString());
+        setAmount(verifiedAmt.toFixed(2));
+        setDescription(`Detention at ${targetFacilityType === 'delivery' ? 'receiver' : 'shipper'} dock (${auditedHours.toFixed(2)} billable hrs) - Accepted Detention Audit v${acceptedAudit.audit_version}`);
+        setNotes(`Prefilled from Accepted Detention Audit v${acceptedAudit.audit_version} (Audit ID: ${acceptedAudit.id})`);
+
+        if (preselectedLoad) {
+          setBrokerName(preselectedLoad.broker?.company_name || '');
+          setBrokerContactPerson(preselectedLoad.broker?.contact_name || '');
+          setBrokerContactEmail(preselectedLoad.broker?.contact_email || '');
+          setBrokerContactPhone(preselectedLoad.broker?.contact_phone || '');
+        } else {
+          setBrokerName('');
+          setBrokerContactPerson('');
+          setBrokerContactEmail('');
+          setBrokerContactPhone('');
+        }
+
+        setPaymentMethod('comchek');
+        setReceiptNumber('');
+        setReceiptDocName('');
+        setRateConRevisionNumber('');
+        setRejectionReason('');
+
+        setAuditPrefillMeta({
+          auditId: acceptedAudit.id,
+          version: acceptedAudit.audit_version,
+          verifiedAmount: verifiedAmt,
+          billableHours: auditedHours,
+          facilityType: targetFacilityType,
+          totalDwellHours,
+          freeHours,
+          rate,
+        });
+        setIsDetentionManuallyEdited(false);
       } else {
-        setFacilityType('pickup');
-        setFacilityName('');
-        setFacilityAddress('');
-        setBrokerName('');
-        setBrokerContactPerson('');
-        setBrokerContactEmail('');
-        setBrokerContactPhone('');
-      }
+        // Standard Manual defaults (no accepted audit)
+        setAuditPrefillMeta(null);
+        setIsDetentionManuallyEdited(false);
 
-      setPaymentMethod('comchek');
-      setReceiptNumber('');
-      setReceiptDocName('');
-      setRateConRevisionNumber('');
-      setRejectionReason('');
-      setNotes('');
+        setType('detention');
+        setStatus('draft');
+        setDescription('Detention at receiver dock during unloading.');
+        setAmount('75.00');
+        setSelectedLoadId(preselectedLoad ? preselectedLoad.id : availableLoads[0]?.id || '');
+
+        const nowLocal = toLocalInputValue(new Date().toISOString(), operationalTimezone);
+        const twoHoursAgoLocal = toLocalInputValue(new Date(Date.now() - 3.5 * 3600000).toISOString(), operationalTimezone);
+        setArrivalTime(twoHoursAgoLocal);
+        setIsStillAtDock(true);
+        setDepartureTime(nowLocal);
+        setLoadingStartTime('');
+        setLoadingCompleteTime('');
+        setUnloadingStartTime('');
+        setUnloadingCompleteTime('');
+        setFreeTimeHours('2.0');
+        setHourlyRate('75.00');
+
+        if (preselectedLoad) {
+          setFacilityType('pickup');
+          setFacilityName(`${preselectedLoad.origin_city}, ${preselectedLoad.origin_state} (Shipper)`);
+          setFacilityAddress(`${preselectedLoad.origin_city}, ${preselectedLoad.origin_state}`);
+          setBrokerName(preselectedLoad.broker?.company_name || '');
+          setBrokerContactPerson(preselectedLoad.broker?.contact_name || '');
+          setBrokerContactEmail(preselectedLoad.broker?.contact_email || '');
+          setBrokerContactPhone(preselectedLoad.broker?.contact_phone || '');
+        } else {
+          setFacilityType('pickup');
+          setFacilityName('');
+          setFacilityAddress('');
+          setBrokerName('');
+          setBrokerContactPerson('');
+          setBrokerContactEmail('');
+          setBrokerContactPhone('');
+        }
+
+        setPaymentMethod('comchek');
+        setReceiptNumber('');
+        setReceiptDocName('');
+        setRateConRevisionNumber('');
+        setRejectionReason('');
+        setNotes('');
+      }
     }
-  }, [isOpen, claimToEdit, preselectedLoad, availableLoads]);
+  }, [isOpen, claimToEdit, preselectedLoad, availableLoads, acceptedAudit]);
+
+  // Check if an accepted audit is actively prefilling this modal
+  const hasAcceptedAudit = Boolean(
+    !claimToEdit &&
+    acceptedAudit &&
+    acceptedAudit.human_review_status === 'accepted'
+  );
 
   // Live detention calculation
   const liveDetentionCalc = useMemo(() => {
     if (type !== 'detention' || !arrivalTime) return null;
+    // CRITICAL: When actively prefilled from an accepted audit and not manually edited,
+    // do NOT run live calculation against Date.now()!
+    if ((hasAcceptedAudit || auditPrefillMeta) && !isDetentionManuallyEdited) {
+      return null;
+    }
     try {
       const arrIso = new Date(arrivalTime).toISOString();
       const depIso = isStillAtDock ? null : departureTime ? new Date(departureTime).toISOString() : null;
@@ -215,14 +371,28 @@ export const AccessorialModal: React.FC<AccessorialModalProps> = ({
     } catch {
       return null;
     }
-  }, [type, arrivalTime, isStillAtDock, departureTime, freeTimeHours, hourlyRate]);
+  }, [type, arrivalTime, isStillAtDock, departureTime, freeTimeHours, hourlyRate, hasAcceptedAudit, auditPrefillMeta, isDetentionManuallyEdited]);
 
-  // Auto-update amount when detention calculation changes
+  // Auto-update amount when detention calculation changes:
+  // Preserves deterministic audited amount unless the user manually edits detention params
   useEffect(() => {
-    if (type === 'detention' && liveDetentionCalc) {
-      setAmount(liveDetentionCalc.totalAmount.toFixed(2));
+    if (type === 'detention') {
+      if ((hasAcceptedAudit || auditPrefillMeta) && !isDetentionManuallyEdited) {
+        const verified =
+          auditPrefillMeta?.verifiedAmount ??
+          (acceptedAudit?.human_review_status === 'accepted'
+            ? acceptedAudit.pickup_verified_amount ||
+              acceptedAudit.delivery_verified_amount ||
+              acceptedAudit.total_verified_amount
+            : undefined);
+        if (verified !== undefined) {
+          setAmount(verified.toFixed(2));
+        }
+      } else if (liveDetentionCalc) {
+        setAmount(liveDetentionCalc.totalAmount.toFixed(2));
+      }
     }
-  }, [type, liveDetentionCalc]);
+  }, [type, liveDetentionCalc, auditPrefillMeta, isDetentionManuallyEdited, hasAcceptedAudit, acceptedAudit]);
 
   // Handle Type Change
   const handleTypeChange = (newType: AccessorialType) => {
@@ -230,7 +400,18 @@ export const AccessorialModal: React.FC<AccessorialModalProps> = ({
     const config = ACCESSORIAL_TYPE_CONFIG[newType];
     if (newType === 'detention') {
       setDescription(`Detention at ${facilityType} facility.`);
-      if (liveDetentionCalc) {
+      if ((hasAcceptedAudit || auditPrefillMeta) && !isDetentionManuallyEdited) {
+        const verified =
+          auditPrefillMeta?.verifiedAmount ??
+          (acceptedAudit?.human_review_status === 'accepted'
+            ? acceptedAudit.pickup_verified_amount ||
+              acceptedAudit.delivery_verified_amount ||
+              acceptedAudit.total_verified_amount
+            : undefined);
+        if (verified !== undefined) {
+          setAmount(verified.toFixed(2));
+        }
+      } else if (liveDetentionCalc) {
         setAmount(liveDetentionCalc.totalAmount.toFixed(2));
       }
     } else {
@@ -291,6 +472,13 @@ export const AccessorialModal: React.FC<AccessorialModalProps> = ({
         const unloadStartIso = unloadingStartTime ? parseInputToIso(unloadingStartTime, operationalTimezone) : null;
         const unloadCompIso = unloadingCompleteTime ? parseInputToIso(unloadingCompleteTime, operationalTimezone) : null;
 
+        const auditedBillableHours =
+          auditPrefillMeta && !isDetentionManuallyEdited
+            ? auditPrefillMeta.billableHours
+            : liveDetentionCalc
+            ? liveDetentionCalc.billableHours
+            : 0;
+
         detentionDetailsInput = {
           facility_type: facilityType,
           facility_name: facilityName.trim() || undefined,
@@ -305,6 +493,7 @@ export const AccessorialModal: React.FC<AccessorialModalProps> = ({
           departure_time: depIso,
           free_time_hours: parseFloat(freeTimeHours) || 2.0,
           hourly_rate: parseFloat(hourlyRate) || 75.0,
+          billable_hours: auditedBillableHours,
         };
       }
 
@@ -314,6 +503,8 @@ export const AccessorialModal: React.FC<AccessorialModalProps> = ({
           status,
           description: description.trim(),
           amount: parsedAmount,
+          audit_id: auditPrefillMeta?.auditId || claimToEdit.audit_id || null,
+          audit_version: auditPrefillMeta?.version || claimToEdit.audit_version || null,
           detention_details: detentionDetailsInput,
           receipt_doc_name: receiptDocName.trim() || null,
           receipt_number: receiptNumber.trim() || null,
@@ -343,6 +534,8 @@ export const AccessorialModal: React.FC<AccessorialModalProps> = ({
           status,
           description: description.trim(),
           amount: parsedAmount,
+          audit_id: auditPrefillMeta?.auditId || null,
+          audit_version: auditPrefillMeta?.version || null,
           detention_details: detentionDetailsInput,
           receipt_doc_name: receiptDocName.trim() || null,
           receipt_number: receiptNumber.trim() || null,
@@ -385,6 +578,35 @@ export const AccessorialModal: React.FC<AccessorialModalProps> = ({
           <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-lg flex items-center gap-2.5 text-xs text-rose-400">
             <AlertCircle className="w-4 h-4 shrink-0" />
             <span>{error}</span>
+          </div>
+        )}
+
+        {/* Accepted Detention Audit Prefill Banner */}
+        {auditPrefillMeta && (
+          <div
+            id="audit-prefill-badge-banner"
+            className="p-3.5 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-center justify-between text-xs text-amber-200"
+          >
+            <div className="flex items-center gap-2.5">
+              <ShieldCheck className="w-5 h-5 text-amber-400 shrink-0" />
+              <div>
+                <span className="font-bold text-amber-100 block">
+                  Accepted Detention Audit v{auditPrefillMeta.version}
+                </span>
+                <span className="text-[11px] text-amber-300/80">
+                  Deterministic audit values prefilled for {auditPrefillMeta.facilityType === 'delivery' ? 'Receiver (Delivery)' : 'Shipper (Pickup)'}.
+                </span>
+              </div>
+            </div>
+            <div className="text-right pl-3 border-l border-amber-500/20 shrink-0">
+              <span className="block text-[10px] text-amber-400 uppercase font-semibold">Audited Detention</span>
+              <span className="font-mono font-bold text-amber-300 text-sm">
+                {formatCurrency(auditPrefillMeta.verifiedAmount)}
+              </span>
+              <span className="block text-[10px] text-slate-400 font-mono">
+                {auditPrefillMeta.billableHours.toFixed(2)} billable hrs
+              </span>
+            </div>
           </div>
         )}
 
@@ -472,7 +694,10 @@ export const AccessorialModal: React.FC<AccessorialModalProps> = ({
                 <label className="block text-[11px] font-medium text-slate-300">Stop Type</label>
                 <select
                   value={facilityType}
-                  onChange={(e) => setFacilityType(e.target.value as FacilityStopType)}
+                  onChange={(e) => {
+                    setFacilityType(e.target.value as FacilityStopType);
+                    setIsDetentionManuallyEdited(true);
+                  }}
                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
                 >
                   <option value="pickup">Shipper (Pickup)</option>
@@ -501,18 +726,31 @@ export const AccessorialModal: React.FC<AccessorialModalProps> = ({
                   <label className="block text-[11px] font-medium text-slate-300">
                     Arrival Timestamp <span className="text-rose-400">*</span>
                   </label>
-                  <button
-                    type="button"
-                    onClick={() => setArrivalTime(toLocalInputValue(new Date().toISOString(), operationalTimezone))}
-                    className="text-[10px] text-indigo-400 hover:text-indigo-300 underline cursor-pointer"
-                  >
-                    Set to Now
-                  </button>
+                  {auditPrefillMeta && !isDetentionManuallyEdited ? (
+                    <span className="text-[10px] text-emerald-400 font-mono flex items-center gap-1 font-medium">
+                      <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                      Audited Arrival
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setArrivalTime(toLocalInputValue(new Date().toISOString(), operationalTimezone));
+                        setIsDetentionManuallyEdited(true);
+                      }}
+                      className="text-[10px] text-indigo-400 hover:text-indigo-300 underline cursor-pointer"
+                    >
+                      Set to Now
+                    </button>
+                  )}
                 </div>
                 <input
                   type="datetime-local"
                   value={arrivalTime}
-                  onChange={(e) => setArrivalTime(e.target.value)}
+                  onChange={(e) => {
+                    setArrivalTime(e.target.value);
+                    setIsDetentionManuallyEdited(true);
+                  }}
                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-mono"
                 />
               </div>
@@ -520,21 +758,34 @@ export const AccessorialModal: React.FC<AccessorialModalProps> = ({
               <div className="space-y-1">
                 <div className="flex items-center justify-between">
                   <label className="block text-[11px] font-medium text-slate-300">Departure Timestamp</label>
-                  <label className="flex items-center gap-1.5 text-[10px] text-amber-300 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={isStillAtDock}
-                      onChange={(e) => setIsStillAtDock(e.target.checked)}
-                      className="rounded bg-slate-900 border-slate-700 text-indigo-600 focus:ring-0"
-                    />
-                    <span>Driver Still at Dock</span>
-                  </label>
+                  {auditPrefillMeta && !isDetentionManuallyEdited ? (
+                    <span className="text-[10px] text-emerald-400 font-mono flex items-center gap-1 font-medium">
+                      <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                      Audited Concluded Stop
+                    </span>
+                  ) : (
+                    <label className="flex items-center gap-1.5 text-[10px] text-amber-300 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={isStillAtDock}
+                        onChange={(e) => {
+                          setIsStillAtDock(e.target.checked);
+                          setIsDetentionManuallyEdited(true);
+                        }}
+                        className="rounded bg-slate-900 border-slate-700 text-indigo-600 focus:ring-0"
+                      />
+                      <span>Driver Still at Dock</span>
+                    </label>
+                  )}
                 </div>
                 <input
                   type="datetime-local"
                   value={departureTime}
                   disabled={isStillAtDock}
-                  onChange={(e) => setDepartureTime(e.target.value)}
+                  onChange={(e) => {
+                    setDepartureTime(e.target.value);
+                    setIsDetentionManuallyEdited(true);
+                  }}
                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-mono disabled:opacity-40"
                 />
               </div>
@@ -632,7 +883,10 @@ export const AccessorialModal: React.FC<AccessorialModalProps> = ({
                   step="0.5"
                   min="0"
                   value={freeTimeHours}
-                  onChange={(e) => setFreeTimeHours(e.target.value)}
+                  onChange={(e) => {
+                    setFreeTimeHours(e.target.value);
+                    setIsDetentionManuallyEdited(true);
+                  }}
                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-mono"
                 />
               </div>
@@ -645,24 +899,61 @@ export const AccessorialModal: React.FC<AccessorialModalProps> = ({
                     step="5"
                     min="0"
                     value={hourlyRate}
-                    onChange={(e) => setHourlyRate(e.target.value)}
+                    onChange={(e) => {
+                      setHourlyRate(e.target.value);
+                      setIsDetentionManuallyEdited(true);
+                    }}
                     className="w-full bg-slate-900 border border-slate-700 rounded-lg pl-6 pr-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-mono"
                   />
                 </div>
               </div>
             </div>
 
-            {/* Live Calculation Preview Card */}
-            {liveDetentionCalc && (
-              <div className="p-3 bg-slate-950/80 rounded-lg border border-slate-800 grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
+            {/* Live Calculation or Authoritative Audit Preview Card */}
+            {auditPrefillMeta && !isDetentionManuallyEdited ? (
+              <div
+                id="authoritative-audit-preview-card"
+                className="p-3 bg-emerald-950/40 rounded-lg border border-emerald-500/30 grid grid-cols-2 sm:grid-cols-4 gap-2 text-center"
+              >
                 <div>
-                  <span className="block text-[10px] text-slate-400 uppercase">Total Time at Dock</span>
+                  <span className="block text-[10px] text-emerald-300/80 uppercase font-semibold">Total Time at Dock</span>
+                  <span className="text-xs font-mono font-bold text-emerald-100">
+                    {Math.floor(auditPrefillMeta.totalDwellHours)}h {Math.round((auditPrefillMeta.totalDwellHours % 1) * 60)}m
+                  </span>
+                </div>
+                <div>
+                  <span className="block text-[10px] text-emerald-300/80 uppercase font-semibold">Status</span>
+                  <span className="text-xs font-semibold text-emerald-400 flex items-center justify-center gap-1">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 inline" />
+                    Audited & Verified
+                  </span>
+                </div>
+                <div>
+                  <span className="block text-[10px] text-emerald-300/80 uppercase font-semibold">Billable Hours</span>
+                  <span className="text-xs font-mono font-bold text-indigo-300">
+                    {auditPrefillMeta.billableHours.toFixed(2)} hrs
+                  </span>
+                </div>
+                <div>
+                  <span className="block text-[10px] text-emerald-300/80 uppercase font-semibold">Total Claim Amount</span>
+                  <span className="text-xs font-mono font-bold text-emerald-400">
+                    {formatCurrency(auditPrefillMeta.verifiedAmount)}
+                  </span>
+                </div>
+              </div>
+            ) : liveDetentionCalc ? (
+              <div
+                id="live-detention-calc-preview-card"
+                className="p-3 bg-slate-950/80 rounded-lg border border-slate-800 grid grid-cols-2 sm:grid-cols-4 gap-2 text-center"
+              >
+                <div>
+                  <span className="block text-[10px] text-slate-400 uppercase font-semibold">Total Time at Dock</span>
                   <span className="text-xs font-mono font-bold text-slate-200">
                     {liveDetentionCalc.formattedDuration}
                   </span>
                 </div>
                 <div>
-                  <span className="block text-[10px] text-slate-400 uppercase">Status</span>
+                  <span className="block text-[10px] text-slate-400 uppercase font-semibold">Status</span>
                   <span
                     className={`text-xs font-semibold ${
                       liveDetentionCalc.isWithinFreeTime ? 'text-emerald-400' : 'text-amber-400'
@@ -672,19 +963,19 @@ export const AccessorialModal: React.FC<AccessorialModalProps> = ({
                   </span>
                 </div>
                 <div>
-                  <span className="block text-[10px] text-slate-400 uppercase">Billable Hours</span>
+                  <span className="block text-[10px] text-slate-400 uppercase font-semibold">Billable Hours</span>
                   <span className="text-xs font-mono font-bold text-indigo-300">
                     {liveDetentionCalc.billableHours.toFixed(2)} hrs
                   </span>
                 </div>
                 <div>
-                  <span className="block text-[10px] text-slate-400 uppercase">Total Claim Amount</span>
+                  <span className="block text-[10px] text-slate-400 uppercase font-semibold">Total Claim Amount</span>
                   <span className="text-xs font-mono font-bold text-emerald-400">
                     {formatCurrency(liveDetentionCalc.totalAmount)}
                   </span>
                 </div>
               </div>
-            )}
+            ) : null}
           </div>
         )}
 
@@ -759,9 +1050,17 @@ export const AccessorialModal: React.FC<AccessorialModalProps> = ({
           </div>
 
           <div className="space-y-1">
-            <label className="block text-xs font-semibold text-slate-300">
-              Claim Amount ($ USD) <span className="text-rose-400">*</span>
-            </label>
+            <div className="flex items-center justify-between">
+              <label className="block text-xs font-semibold text-slate-300">
+                Claim Amount ($ USD) <span className="text-rose-400">*</span>
+              </label>
+              {auditPrefillMeta && !isDetentionManuallyEdited && (
+                <span className="text-[10px] text-emerald-400 font-mono font-medium flex items-center gap-1">
+                  <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                  Locked to Audit
+                </span>
+              )}
+            </div>
             <div className="relative">
               <span className="absolute left-3 top-2 text-slate-500 text-xs">$</span>
               <input
@@ -769,8 +1068,15 @@ export const AccessorialModal: React.FC<AccessorialModalProps> = ({
                 step="0.01"
                 min="0"
                 value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-700 rounded-lg pl-7 pr-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-mono font-bold"
+                onChange={(e) => {
+                  setAmount(e.target.value);
+                  setIsDetentionManuallyEdited(true);
+                }}
+                className={`w-full bg-slate-900 border ${
+                  auditPrefillMeta && !isDetentionManuallyEdited
+                    ? 'border-emerald-500/50 text-emerald-300 focus:border-emerald-400'
+                    : 'border-slate-700 text-slate-200 focus:border-indigo-500'
+                } rounded-lg pl-7 pr-3 py-2 text-xs focus:outline-none font-mono font-bold`}
               />
             </div>
           </div>

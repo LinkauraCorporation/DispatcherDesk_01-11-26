@@ -49,6 +49,7 @@ import {
   detentionAuditService,
   normalizeToIso,
   getTimeMs,
+  resolveCheckCallEffectiveTime,
 } from '../modules/accessorials/detentionAuditService.ts';
 import { DetentionAuditInput } from '../modules/accessorials/detentionAuditTypes.ts';
 import { loadService } from '../modules/loads/loadService.ts';
@@ -431,6 +432,108 @@ async function runPhase2BTests() {
     // Test getAuditById
     const single = await detentionAuditService.getAuditById(testOrgId, persistedAudit.id);
     assert(single !== null && single.id === persistedAudit.id, 'getAuditById retrieves exact audit');
+  }
+
+  // --- Suite 8: Check-Call Timestamp Selection & Anomaly Resolution ---
+  console.log('\n--- Test Suite 8: Check-Call Timestamp Selection & Anomaly Resolution ---');
+  {
+    // 1. arrived_pickup with conflicting event_at and created_at (AFL-2026-1090 scenario)
+    const aflConflict = {
+      id: '362a6c1a-b38a-445f-b635-0dfd695e3fe4',
+      call_type: 'arrived_pickup',
+      created_at: '2026-10-24T20:41:28.578224Z',
+      event_at: '2026-11-01T09:26:25.588752Z',
+    };
+    const resolvedAfl = resolveCheckCallEffectiveTime(aflConflict);
+    assert(
+      resolvedAfl === '2026-10-24T20:41:28.578Z',
+      'Conflicting check call (event_at > created_at) resolves to created_at (Oct 24, 2026, 03:41 PM CDT)'
+    );
+
+    // 2. arrived_pickup with valid event_at (retroactive logging)
+    const retroactiveCall = {
+      id: 'cc-retroactive',
+      call_type: 'arrived_pickup',
+      created_at: '2026-10-24T14:30:00.000Z',
+      event_at: '2026-10-24T14:00:00.000Z',
+    };
+    const resolvedRetro = resolveCheckCallEffectiveTime(retroactiveCall);
+    assert(
+      resolvedRetro === '2026-10-24T14:00:00.000Z',
+      'Valid retroactive event_at (event_at <= created_at) is preserved'
+    );
+
+    // 3. Fallback to created_at when event_at is missing/null/empty
+    const nullEventCall = {
+      id: 'cc-null-event',
+      call_type: 'arrived_pickup',
+      created_at: '2026-10-24T20:41:28.578Z',
+      event_at: null,
+    };
+    assert(
+      resolveCheckCallEffectiveTime(nullEventCall) === '2026-10-24T20:41:28.578Z',
+      'Fallback to created_at when event_at is null'
+    );
+
+    // 4. End-to-end audit for load AFL-2026-1090 prevents false late penalty
+    const aflInput: DetentionAuditInput = {
+      loadId: '27a07989-16e0-4921-b60d-25c2681578e2',
+      facilityScope: 'pickup',
+      loadContext: {
+        loadNumber: 'AFL-2026-1090',
+        pickupDatetime: '2026-10-25T18:30:00.000Z',
+        pickupTimezone: 'America/Chicago',
+        deliveryDatetime: null,
+        deliveryTimezone: 'America/Chicago',
+        operationalTimezone: 'America/Chicago',
+        pipelineStatus: 'delivered',
+        pickupArrival: null,
+        pickupLoadingStart: null,
+        pickupLoadingComplete: null,
+        pickupDeparture: '2026-10-25T21:00:00.000Z',
+        deliveryArrival: null,
+        deliveryUnloadingStart: null,
+        deliveryUnloadingComplete: null,
+        deliveryDeparture: null,
+      },
+      rateConTerms: {
+        hasRateCon: true,
+        freeTimeHours: 2.0,
+        hourlyRate: 75.0,
+        detentionNoticeTerms: null,
+        specialInstructions: null,
+      },
+      checkCalls: [
+        {
+          id: '362a6c1a-b38a-445f-b635-0dfd695e3fe4',
+          callType: 'arrived_pickup',
+          status: 'arrived',
+          eventAt: resolveCheckCallEffectiveTime(aflConflict)!,
+          created_at: aflConflict.created_at,
+          event_at: aflConflict.event_at,
+          notes: 'Driver in-gate',
+          locationCity: 'Dallas',
+          locationState: 'TX',
+        },
+      ],
+      documentEvidence: [],
+      activityNotes: [],
+      driverMessages: [],
+    };
+
+    const aflAudit = auditDetentionEligibility(aflInput);
+    assert(
+      aflAudit.pickupAudit.arrivalTime === '2026-10-24T20:41:28.578Z',
+      'AFL-2026-1090 audit correctly uses Oct 24 arrival time'
+    );
+    assert(
+      aflAudit.pickupAudit.punctualityAssessment === 'early',
+      'AFL-2026-1090 punctuality assessed as early, eliminating 9536m late arrival'
+    );
+    assert(
+      !aflAudit.discrepancies.some((d) => d.code === 'APPOINTMENT_MISMATCH'),
+      'APPOINTMENT_MISMATCH blocker discrepancy eliminated'
+    );
   }
 
   console.log('================================================================');

@@ -7,6 +7,7 @@ import {
   AIContextActivity,
   AIContextTask,
   AIContextFinancials,
+  AIContextDetentionAudit,
   AIUserRole,
 } from './aiTypes.ts';
 import { LoadWithRelations } from '../loads/loadTypes.ts';
@@ -24,6 +25,8 @@ import { DispatcherTask, TASK_CATEGORY_CONFIG } from '../tasks/taskTypes.ts';
 import { loadService } from '../loads/loadService.ts';
 import { checkCallService, isLoadActiveForCheckInTracking } from '../checkcalls/checkCallService.ts';
 import { accessorialService } from '../accessorials/accessorialService.ts';
+import { detentionAuditService } from '../accessorials/detentionAuditService.ts';
+import { formatSafeTimestamp } from '../accessorials/accessorialComms.ts';
 import { documentService } from '../documents/documentService.ts';
 import { activityService } from '../activity/activityService.ts';
 import { profitabilityService } from '../profitability/profitabilityService.ts';
@@ -35,6 +38,7 @@ import {
   getCurrentTimeInZone,
 } from '../../lib/timezones.ts';
 import { calculateProfitability } from '../../lib/calculations.ts';
+import { LoadDetentionAudit } from '../../types/domain.types.ts';
 
 export interface BuildContextOptions {
   organizationId: string;
@@ -74,6 +78,7 @@ export async function buildCopilotContext(options: BuildContextOptions): Promise
     allActivities,
     allTasks,
     tStats,
+    latestAcceptedAudit,
   ]: [
     LoadWithRelations[],
     CheckCall[],
@@ -81,7 +86,8 @@ export async function buildCopilotContext(options: BuildContextOptions): Promise
     FreightDocument[],
     LoadActivityEvent[],
     DispatcherTask[],
-    any
+    any,
+    LoadDetentionAudit | null
   ] = await Promise.all([
     loadService.getLoads(organizationId),
     checkCallService.getCheckCalls(organizationId),
@@ -90,6 +96,9 @@ export async function buildCopilotContext(options: BuildContextOptions): Promise
     activityService.getAllActivities(organizationId),
     taskService.getTasks(organizationId, { status: 'active' }),
     taskService.getTaskStats(organizationId).catch(() => null),
+    specificLoadId
+      ? detentionAuditService.getLatestAcceptedAuditForLoad(organizationId, specificLoadId).catch(() => null)
+      : Promise.resolve(null),
   ]);
 
   // 2. Filter loads to relevant set (active + delivered/recent + target)
@@ -411,6 +420,54 @@ export async function buildCopilotContext(options: BuildContextOptions): Promise
     }
   }
 
+  let contextDetentionAudit: AIContextDetentionAudit | undefined = undefined;
+  if (latestAcceptedAudit) {
+    const anyAudit = latestAcceptedAudit as any;
+    const arrivalRaw = anyAudit.pickup_arrival_time || anyAudit.evidence_summary?.arrival_time;
+    const detentionStartRaw = anyAudit.pickup_detention_start || anyAudit.evidence_summary?.detention_start_time;
+    const departureRaw = anyAudit.pickup_departure_time || anyAudit.pickup_detention_end || anyAudit.evidence_summary?.departure_time;
+    const verifiedAmount = Number(anyAudit.pickup_verified_amount ?? anyAudit.calculated_amount ?? anyAudit.total_verified_amount ?? 0);
+    const facilityType: 'pickup' | 'delivery' = anyAudit.facility_type || 'pickup';
+    const facilityName: string = anyAudit.facility_name || 'Buckeye Logistics Terminal';
+    const freeTimeHours = Number(anyAudit.pickup_free_time_hours ?? anyAudit.contract_terms?.free_time_hours ?? 2);
+    const billableHours = Number(anyAudit.pickup_billable_hours ?? anyAudit.billable_hours ?? anyAudit.total_verified_hours ?? 0);
+    const hourlyRate = Number(anyAudit.pickup_hourly_rate ?? anyAudit.contract_terms?.detention_rate_per_hour ?? 75);
+
+    const arrivalFormatted = formatSafeTimestamp(
+      arrivalRaw,
+      operationalTimezone,
+      dispatcherTimezone
+    );
+    const detentionStartFormatted = formatSafeTimestamp(
+      detentionStartRaw,
+      operationalTimezone,
+      dispatcherTimezone
+    );
+    const departureFormatted = formatSafeTimestamp(
+      departureRaw,
+      operationalTimezone,
+      dispatcherTimezone
+    );
+
+    contextDetentionAudit = {
+      id: latestAcceptedAudit.id,
+      loadId: latestAcceptedAudit.load_id,
+      auditVersion: latestAcceptedAudit.audit_version,
+      auditStatus: latestAcceptedAudit.audit_status,
+      humanReviewStatus: latestAcceptedAudit.human_review_status,
+      facilityType,
+      facilityName,
+      arrivalFormatted,
+      detentionStartFormatted,
+      departureFormatted,
+      freeTimeHours,
+      billableHours,
+      hourlyRate,
+      verifiedAmount,
+      verifiedAmountFormatted: `$${verifiedAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+    };
+  }
+
   return {
     organizationId,
     userRole,
@@ -434,6 +491,7 @@ export async function buildCopilotContext(options: BuildContextOptions): Promise
       : undefined,
     operationalAlerts,
     financials,
+    detentionAudit: contextDetentionAudit,
   };
 }
 

@@ -18,11 +18,15 @@ import {
 } from '../../lib/timezones.ts';
 import {
   generateBrokerDetentionEmail,
+  validateDetentionNoticeData,
 } from '../accessorials/accessorialComms.ts';
 import {
   accessorialService,
   calculateDetention,
 } from '../accessorials/accessorialService.ts';
+import { detentionAuditService } from '../accessorials/detentionAuditService.ts';
+import { loadService } from '../loads/loadService.ts';
+import { LoadDetentionAudit } from '../../types/domain.types.ts';
 import { AccessorialWithLoad } from '../accessorials/accessorialTypes.ts';
 import { activityService } from '../activity/activityService.ts';
 import { supabase } from '../../lib/supabase.ts';
@@ -140,6 +144,23 @@ export async function generateCopilotResponse(
     try {
       const serverResponse = await callServerGeminiEndpoint(context, request);
       if (serverResponse) {
+        // Sanity & safety check on AI-generated text
+        const hasObjectStr = (str?: string) => Boolean(str && str.includes('[object Object]'));
+        if (hasObjectStr(serverResponse.content) || hasObjectStr(serverResponse.markdownContent) || hasObjectStr(serverResponse.subject)) {
+          console.warn('[AI copilot] Server Gemini response contained [object Object]. Reverting to deterministic engine.');
+          return executeLocalDeterministicEngine(organizationId, context, request);
+        }
+
+        // If this was a detention notice and authoritative audit exists, guarantee amount grounding
+        if (request.action === 'detention_escalation' && context.detentionAudit) {
+          const authAmount = context.detentionAudit.verifiedAmountFormatted;
+          const authHours = `${context.detentionAudit.billableHours} hours`;
+          if (!serverResponse.content.includes(authAmount) || !serverResponse.content.includes(authHours)) {
+            console.warn('[AI copilot] Server Gemini drifted from authoritative audit values. Enforcing deterministic notice.');
+            return executeLocalDeterministicEngine(organizationId, context, request);
+          }
+        }
+
         return serverResponse;
       }
     } catch (e) {
@@ -453,11 +474,47 @@ async function generateLocalDetentionEscalation(
     ) || accessorials.find((a: AccessorialWithLoad) => a.load_id === request.loadId);
   }
 
+  const targetLoadId = request.loadId || targetClaim?.load_id;
+  let acceptedAudit: LoadDetentionAudit | null = null;
+  if (targetLoadId) {
+    acceptedAudit = await detentionAuditService.getLatestAcceptedAuditForLoad(organizationId, targetLoadId).catch(() => null);
+  }
+
+  const auditAny = acceptedAudit as any;
+
+  // If no target claim was found, but we have an accepted audit for the load, synthesize the authoritative claim
+  if (!targetClaim && acceptedAudit && targetLoadId) {
+    const targetLoad = await loadService.getLoadById(organizationId, targetLoadId).catch(() => null);
+    targetClaim = {
+      id: `audit-${acceptedAudit.id}`,
+      organization_id: organizationId,
+      load_id: targetLoadId,
+      type: 'detention',
+      amount: Number(auditAny?.pickup_verified_amount ?? auditAny?.calculated_amount ?? auditAny?.total_verified_amount ?? 0),
+      status: 'pending',
+      location: auditAny?.facility_name || 'Buckeye Logistics Terminal',
+      notes: `Generated from Accepted Detention Audit v${acceptedAudit.audit_version}`,
+      created_at: acceptedAudit.created_at,
+      detention_details: {
+        facility_type: auditAny?.facility_type || 'pickup',
+        facility_name: auditAny?.facility_name || 'Buckeye Logistics Terminal',
+        arrival_time: auditAny?.pickup_arrival_time || auditAny?.evidence_summary?.arrival_time || '',
+        departure_time: auditAny?.pickup_departure_time || auditAny?.evidence_summary?.departure_time || undefined,
+        free_time_hours: Number(auditAny?.pickup_free_time_hours ?? auditAny?.contract_terms?.free_time_hours ?? 2),
+        billable_hours: Number(auditAny?.pickup_billable_hours ?? auditAny?.billable_hours ?? auditAny?.total_verified_hours ?? 0),
+        hourly_rate: Number(auditAny?.pickup_hourly_rate ?? auditAny?.contract_terms?.detention_rate_per_hour ?? 75),
+        is_active_detention: false,
+        total_time_at_dock_hours: Number(auditAny?.evidence_summary?.total_dwell_hours || 0),
+      },
+      load: targetLoad || undefined,
+    } as any;
+  }
+
   if (!targetClaim) {
     targetClaim = accessorials.find((a: AccessorialWithLoad) => a.type === 'detention') || accessorials[0];
   }
 
-  if (!targetClaim) {
+  if (!targetClaim && !acceptedAudit) {
     const markdown = `⚠️ **No accessorial or detention claim found** for the selected context.\n\nPlease select or create a detention claim in the Accessorials module first.`;
     return {
       id: responseId,
@@ -475,24 +532,72 @@ async function generateLocalDetentionEscalation(
     };
   }
 
+  // Authoritative validation check before generating broker-facing notice
+  const validation = validateDetentionNoticeData({
+    claim: targetClaim,
+    audit: acceptedAudit,
+    load: targetClaim?.load,
+  });
+
+  if (!validation.valid) {
+    const errorMarkdown = `⚠️ **Detention Notice Validation Failed (Human Review Required)**\n\n` +
+      `The broker detention notice cannot be generated because authoritative data is invalid or incomplete:\n\n` +
+      validation.errors.map(err => `• ${err}`).join('\n') +
+      `\n\n*Please review the load check calls and detention audit in DispatchDesk before sending to the broker.*`;
+
+    return {
+      id: responseId,
+      action: 'detention_escalation',
+      mode: 'local',
+      title: 'Broker Detention Notice (Human Review Required)',
+      content: errorMarkdown,
+      markdownContent: errorMarkdown,
+      timestamp,
+      groundingSources: acceptedAudit ? [{
+        type: 'activity',
+        id: acceptedAudit.id,
+        label: `Accepted Audit v${acceptedAudit.audit_version} (Flagged for Review)`,
+      }] : [],
+      recommendations: [
+        'Review the load check calls and verify facility arrival/departure timestamps.',
+        'Ensure an authoritative detention audit has been accepted by dispatch before generating broker notices.',
+      ],
+      suggestedActions: [],
+      isDraft: true,
+      requiresConfirmation: true,
+    };
+  }
+
   const det = targetClaim.detention_details;
+  // If acceptedAudit is present, use its authoritative departure time and rate/hours rather than Date.now()!
+  const departureTimeForCalc = acceptedAudit
+    ? (auditAny?.pickup_departure_time || auditAny?.evidence_summary?.departure_time || det?.departure_time)
+    : det?.departure_time;
+
   const detCalc = calculateDetention({
-    arrivalTime: det?.arrival_time || new Date().toISOString(),
-    departureTime: det?.departure_time,
-    freeTimeHours: det?.free_time_hours ?? 2.0,
-    hourlyRate: det?.hourly_rate ?? 75.0,
+    arrivalTime: (auditAny?.pickup_arrival_time || auditAny?.evidence_summary?.arrival_time) || det?.arrival_time || new Date().toISOString(),
+    departureTime: departureTimeForCalc,
+    freeTimeHours: Number(auditAny?.pickup_free_time_hours ?? auditAny?.contract_terms?.free_time_hours ?? det?.free_time_hours ?? 2.0),
+    hourlyRate: Number(auditAny?.pickup_hourly_rate ?? auditAny?.contract_terms?.detention_rate_per_hour ?? det?.hourly_rate ?? 75.0),
   });
 
   const emailDraft = generateBrokerDetentionEmail(targetClaim, detCalc, {
     operationalTimezone: ctx.operationalTimezone,
     dispatcherTimezone: ctx.dispatcherTimezone,
     companyName: targetClaim.load?.client?.company_name || 'Carrier Fleet Operations',
+    acceptedAudit: acceptedAudit,
   });
+
+  if (emailDraft.body.includes('[object Object]') || emailDraft.subject.includes('[object Object]')) {
+    throw new Error('Fatal: Detention notice contains unformatted [object Object] serialization.');
+  }
 
   const markdown = `### ✉️ Draft Broker Detention Escalation Email\n\n` +
     `**Subject:** \`${emailDraft.subject}\`\n\n` +
     `\`\`\`text\n${emailDraft.body}\n\`\`\`\n\n` +
-    `*Note: This is an unsubmitted draft. Review the details and copy into your email client.*`;
+    `*Note: This is an unsubmitted draft. Review the details and copy into your email client. Never sent automatically.*`;
+
+  const verifiedAmt = Number(auditAny?.pickup_verified_amount ?? auditAny?.calculated_amount ?? auditAny?.total_verified_amount ?? 0);
 
   return {
     id: responseId,
@@ -504,11 +609,16 @@ async function generateLocalDetentionEscalation(
     subject: emailDraft.subject,
     timestamp,
     groundingSources: [
-      {
-        type: 'accessorial',
+      ...(acceptedAudit ? [{
+        type: 'activity' as const,
+        id: acceptedAudit.id,
+        label: `Accepted Audit v${acceptedAudit.audit_version} ($${verifiedAmt.toFixed(2)})`,
+      }] : []),
+      ...(!targetClaim.id.startsWith('audit-') ? [{
+        type: 'accessorial' as const,
         id: targetClaim.id,
         label: `Claim ${targetClaim.id} ($${targetClaim.amount.toFixed(2)})`,
-      },
+      }] : []),
     ],
     recommendations: [
       'Ensure the driver obtains a stamped check-in / check-out time on the paper BOL before leaving the facility.',

@@ -494,7 +494,7 @@ export const LoadDetailModal: React.FC<LoadDetailModalProps> = ({
       onClose={onClose}
       title={`Load Details: ${load.load_number}`}
       subtitle={`${load.origin_city}, ${load.origin_state} → ${load.dest_city}, ${load.dest_state}`}
-      maxWidth="3xl"
+      maxWidth="near-full"
     >
       <div className="space-y-6 text-xs text-slate-200">
         {/* Top Operational Status Header */}

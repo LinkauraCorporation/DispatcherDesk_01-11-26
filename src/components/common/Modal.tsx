@@ -90,7 +90,7 @@ export const Modal: React.FC<ModalProps> = ({
     '5xl': 'max-w-5xl',
     '6xl': 'max-w-6xl',
     '7xl': 'max-w-7xl',
-    'near-full': 'w-full md:w-[92vw] lg:w-[94vw] max-w-[1600px]',
+    'near-full': 'w-full md:w-[94vw] lg:w-[96vw] max-w-[1800px]',
   }[maxWidth];
 
   return (

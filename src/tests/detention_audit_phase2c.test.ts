@@ -60,6 +60,7 @@ import {
   protectAndReconcileResult,
   buildGroundingFallbackResult,
   checkUserLoadAccess,
+  normalizeDiscrepancySeverity,
   VALID_DISCREPANCY_CODES,
 } from '../modules/accessorials/detentionAuditReconciliation.ts';
 import { loadService } from '../modules/loads/loadService.ts';
@@ -637,6 +638,196 @@ async function runTests() {
       badDiscValidation.errors.some((e) => e.includes('invalid discrepancy code')),
       'Validation error explicitly flags invalid discrepancy code'
     );
+
+    // 10b. Valid check_call sourceReference IDs (both bare ID and prefixed check_calls.<id>)
+    const aiWithValidCheckCallBare = {
+      status: 'eligible',
+      overallConfidence: 0.90,
+      requiresHumanReview: false,
+      pickupAudit: { status: 'eligible', findings: [] },
+      deliveryAudit: { status: 'not_eligible', findings: [] },
+      evidence: [
+        {
+          id: 'ev-cc-bare',
+          sourceType: 'check_call',
+          sourceReference: 'cc-1', // Bare check_call ID from sampleInput.checkCalls
+          timestamp: '2026-10-24T13:00:00.000Z',
+          extractedFact: 'In-gate check call matches milestone',
+          confidence: 0.95,
+          supportsClaim: true,
+        },
+      ],
+      discrepancies: [],
+      missingEvidence: [],
+      reasoningSummary: 'Test with bare check_call ID',
+    };
+    const validBareValidation = validateGrounding(aiWithValidCheckCallBare, groundTruth, deterministicBaseline);
+    assert(validBareValidation.valid === true, 'Authoritative bare check_call ID is accepted as sourceReference');
+    assert(aiWithValidCheckCallBare.evidence[0].sourceReference === 'check_calls.cc-1', 'Bare check_call sourceReference normalized to check_calls.<id>');
+
+    const aiWithValidCheckCallPrefixed = {
+      status: 'eligible',
+      overallConfidence: 0.90,
+      requiresHumanReview: false,
+      pickupAudit: { status: 'eligible', findings: [] },
+      deliveryAudit: { status: 'not_eligible', findings: [] },
+      evidence: [
+        {
+          id: 'ev-cc-prefixed',
+          sourceType: 'check_call',
+          sourceReference: 'check_calls.cc-1', // Prefixed check_call ID
+          timestamp: '2026-10-24T13:00:00.000Z',
+          extractedFact: 'In-gate check call matches milestone',
+          confidence: 0.95,
+          supportsClaim: true,
+        },
+      ],
+      discrepancies: [],
+      missingEvidence: [],
+      reasoningSummary: 'Test with prefixed check_call ID',
+    };
+    const validPrefixedValidation = validateGrounding(aiWithValidCheckCallPrefixed, groundTruth, deterministicBaseline);
+    assert(validPrefixedValidation.valid === true, 'Authoritative prefixed check_calls.<id> is accepted as sourceReference');
+
+    // 10c. Unsupported / fabricated check_call and general sourceReference rejection
+    const aiWithFabricatedCheckCall = {
+      status: 'eligible',
+      overallConfidence: 0.85,
+      requiresHumanReview: false,
+      pickupAudit: { status: 'eligible', findings: [] },
+      deliveryAudit: { status: 'not_eligible', findings: [] },
+      evidence: [
+        {
+          id: 'ev-fabricated-cc',
+          sourceType: 'check_call',
+          sourceReference: 'check_calls.fabricated-checkcall-uuid-999', // INVENTED CHECK CALL ID
+          timestamp: '2026-10-24T13:00:00.000Z',
+          extractedFact: 'Invented check call event',
+          confidence: 0.9,
+          supportsClaim: true,
+        },
+      ],
+      discrepancies: [],
+      missingEvidence: [],
+      reasoningSummary: 'Test with invented check call ID',
+    };
+    const fabricatedCcValidation = validateGrounding(aiWithFabricatedCheckCall, groundTruth, deterministicBaseline);
+    assert(fabricatedCcValidation.valid === false, 'Fabricated check_calls.<id> is rejected');
+    assert(
+      fabricatedCcValidation.errors.some((e) => e.includes('unsupported check call ID') || e.includes('unsupported sourceReference')),
+      'Validation error flags invented check call ID'
+    );
+
+    const aiWithFabricatedBareRef = {
+      status: 'eligible',
+      overallConfidence: 0.85,
+      requiresHumanReview: false,
+      pickupAudit: { status: 'eligible', findings: [] },
+      deliveryAudit: { status: 'not_eligible', findings: [] },
+      evidence: [
+        {
+          id: 'ev-fabricated-bare',
+          sourceType: 'check_call',
+          sourceReference: 'some-completely-unknown-uuid-999', // INVENTED BARE ID
+          timestamp: '2026-10-24T13:00:00.000Z',
+          extractedFact: 'Invented source reference',
+          confidence: 0.9,
+          supportsClaim: true,
+        },
+      ],
+      discrepancies: [],
+      missingEvidence: [],
+      reasoningSummary: 'Test with invented bare ID',
+    };
+    const fabricatedBareValidation = validateGrounding(aiWithFabricatedBareRef, groundTruth, deterministicBaseline);
+    assert(fabricatedBareValidation.valid === false, 'Fabricated bare sourceReference is rejected');
+    assert(
+      fabricatedBareValidation.errors.some((e) => e.includes('unsupported sourceReference')),
+      'Validation error flags invented bare source reference'
+    );
+
+    // 10d. Valid discrepancy severity and invalid severity normalization
+    const aiWithSeverityAliases = {
+      status: 'needs_review',
+      overallConfidence: 0.80,
+      requiresHumanReview: true,
+      pickupAudit: { status: 'needs_review', findings: [] },
+      deliveryAudit: { status: 'not_eligible', findings: [] },
+      evidence: [],
+      discrepancies: [
+        {
+          code: 'CHECK_CALL_TIME_MISMATCH',
+          severity: 'critical', // Should normalize to 'blocker'
+          description: 'Critical check call mismatch',
+          conflictingSources: ['loads.pickup_arrival_time'],
+          recommendedAction: 'Verify receiver gate log',
+        },
+        {
+          code: 'RATE_CON_FREE_TIME_CONFLICT',
+          severity: 'high', // Should normalize to 'blocker'
+          description: 'High priority RateCon conflict',
+          conflictingSources: ['rate_con'],
+          recommendedAction: 'Review rate confirmation clauses',
+        },
+        {
+          code: 'APPOINTMENT_MISMATCH',
+          severity: 'medium', // Should normalize to 'warning'
+          description: 'Medium appointment discrepancy',
+          conflictingSources: ['loads.pickup_datetime'],
+          recommendedAction: 'Check appointment confirmation',
+        },
+        {
+          code: 'BROKER_APPROVAL_REQUIRED',
+          severity: 'low', // Should normalize to 'info'
+          description: 'Low severity broker notice',
+          conflictingSources: ['rate_con'],
+          recommendedAction: 'Notify broker',
+        },
+      ],
+      missingEvidence: [],
+      reasoningSummary: 'Test with synonym severities',
+    };
+    const severityAliasValidation = validateGrounding(aiWithSeverityAliases, groundTruth, deterministicBaseline);
+    assert(severityAliasValidation.valid === true, 'Discrepancy severities with valid synonyms are accepted and normalized');
+    assert(aiWithSeverityAliases.discrepancies[0].severity === 'blocker', 'critical normalized to blocker');
+    assert(aiWithSeverityAliases.discrepancies[1].severity === 'blocker', 'high normalized to blocker');
+    assert(aiWithSeverityAliases.discrepancies[2].severity === 'warning', 'medium normalized to warning');
+    assert(aiWithSeverityAliases.discrepancies[3].severity === 'info', 'low normalized to info');
+
+    // Direct helper verification
+    assert(normalizeDiscrepancySeverity('blocker') === 'blocker', 'normalizeDiscrepancySeverity("blocker") === "blocker"');
+    assert(normalizeDiscrepancySeverity('warning') === 'warning', 'normalizeDiscrepancySeverity("warning") === "warning"');
+    assert(normalizeDiscrepancySeverity('info') === 'info', 'normalizeDiscrepancySeverity("info") === "info"');
+    assert(normalizeDiscrepancySeverity('CRITICAL') === 'blocker', 'normalizeDiscrepancySeverity("CRITICAL") === "blocker"');
+    assert(normalizeDiscrepancySeverity('High') === 'blocker', 'normalizeDiscrepancySeverity("High") === "blocker"');
+
+    // 10e. Arbitrary / unsupported discrepancy severity rejection
+    const aiWithInvalidSeverity = {
+      status: 'needs_review',
+      overallConfidence: 0.75,
+      requiresHumanReview: true,
+      pickupAudit: { status: 'needs_review', findings: [] },
+      deliveryAudit: { status: 'not_eligible', findings: [] },
+      evidence: [],
+      discrepancies: [
+        {
+          code: 'CHECK_CALL_TIME_MISMATCH',
+          severity: 'catastrophic_emergency', // Completely unsupported severity
+          description: 'Unknown severity discrepancy',
+          conflictingSources: ['loads.pickup_arrival_time'],
+          recommendedAction: 'Check logs',
+        },
+      ],
+      missingEvidence: [],
+      reasoningSummary: 'Test with unsupported arbitrary severity',
+    };
+    const invalidSeverityValidation = validateGrounding(aiWithInvalidSeverity, groundTruth, deterministicBaseline);
+    assert(invalidSeverityValidation.valid === false, 'Arbitrary unmapped discrepancy severity is rejected');
+    assert(
+      invalidSeverityValidation.errors.some((e) => e.includes('invalid severity')),
+      'Validation error flags unsupported arbitrary severity'
+    );
+    assert(normalizeDiscrepancySeverity('catastrophic_emergency') === null, 'Unsupported severity string returns null from normalizer');
 
     console.log('\n--- Test Suite 5: Deterministic Financial Protection (Tests 11, 12) ---');
 

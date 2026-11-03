@@ -70,6 +70,10 @@ export interface AccessorialClaim {
   broker_contact_phone?: string;
   rate_con_revision_number?: string | null;
 
+  // Audit traceability (if prefilled/derived from an accepted detention audit)
+  audit_id?: string | null;
+  audit_version?: number | null;
+
   // Lifecycle actors & timestamps
   requested_by_id: string;
   requested_by_name: string;
@@ -95,6 +99,8 @@ export interface CreateAccessorialInput {
   description: string;
   amount?: number;
   currency?: string;
+  audit_id?: string | null;
+  audit_version?: number | null;
   
   detention_details?: {
     facility_type: FacilityStopType;
@@ -134,6 +140,8 @@ export interface UpdateAccessorialInput {
   status?: AccessorialStatus;
   description?: string;
   amount?: number;
+  audit_id?: string | null;
+  audit_version?: number | null;
   
   detention_details?: {
     facility_type?: FacilityStopType;

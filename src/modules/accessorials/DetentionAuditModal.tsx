@@ -337,7 +337,7 @@ export const DetentionAuditModal: React.FC<DetentionAuditModalProps> = ({
     rate_con: evidenceList.filter((e) => e.sourceType === 'rate_con'),
     milestones: evidenceList.filter((e) => e.sourceType === 'load_milestone'),
     check_calls: evidenceList.filter((e) => e.sourceType === 'check_call'),
-    documents: evidenceList.filter((e) => e.sourceType === 'bol_pod'),
+    documents: evidenceList.filter((e) => e.sourceType === 'bol_pod' || (e.sourceType as string) === 'document'),
     notes: evidenceList.filter((e) => e.sourceType === 'activity_note'),
     driver: evidenceList.filter((e) => e.sourceType === 'driver_message'),
   };
@@ -749,7 +749,7 @@ export const DetentionAuditModal: React.FC<DetentionAuditModalProps> = ({
                   <div className="space-y-2.5 max-h-64 overflow-y-auto pr-1">
                     {discrepanciesList.map((disc, idx) => (
                       <div
-                        key={idx}
+                        key={disc.code ? `disc-${disc.code}-${idx}` : `disc-${idx}`}
                         className={`p-3 rounded-lg border text-xs space-y-1.5 ${
                           disc.severity === 'blocker'
                             ? 'bg-rose-500/10 border-rose-500/30 text-rose-300'
@@ -796,7 +796,7 @@ export const DetentionAuditModal: React.FC<DetentionAuditModalProps> = ({
                   <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
                     {missingEvidenceList.map((item, idx) => (
                       <div
-                        key={idx}
+                        key={`missing-ev-${idx}-${typeof item === 'string' ? item.slice(0, 20) : idx}`}
                         className="p-3 rounded-lg bg-slate-950/60 border border-slate-800 text-xs flex items-center gap-2 text-slate-300"
                       >
                         <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
@@ -833,8 +833,8 @@ export const DetentionAuditModal: React.FC<DetentionAuditModalProps> = ({
                         <span>Rate Confirmation Terms</span>
                       </span>
                       <div className="space-y-1.5">
-                        {evidenceBySource.rate_con.map((ev) => (
-                          <div key={ev.id} className="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800 text-xs flex items-center justify-between gap-3">
+                        {evidenceBySource.rate_con.map((ev, idx) => (
+                          <div key={ev.id ? `ev-rc-${ev.id}-${idx}` : `ev-rc-${idx}`} className="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800 text-xs flex items-center justify-between gap-3">
                             <div>
                               <span className="font-semibold text-slate-200">{ev.sourceReference}: </span>
                               <span className="text-slate-300">{ev.extractedFact}</span>
@@ -856,8 +856,8 @@ export const DetentionAuditModal: React.FC<DetentionAuditModalProps> = ({
                         <span>Operational Milestone Timestamps</span>
                       </span>
                       <div className="space-y-1.5">
-                        {evidenceBySource.milestones.map((ev) => (
-                          <div key={ev.id} className="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800 text-xs flex items-center justify-between gap-3">
+                        {evidenceBySource.milestones.map((ev, idx) => (
+                          <div key={ev.id ? `ev-ms-${ev.id}-${idx}` : `ev-ms-${idx}`} className="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800 text-xs flex items-center justify-between gap-3">
                             <div>
                               <span className="font-semibold text-slate-200">{ev.sourceReference}: </span>
                               <span className="text-slate-300">{ev.extractedFact}</span>
@@ -877,8 +877,8 @@ export const DetentionAuditModal: React.FC<DetentionAuditModalProps> = ({
                         <span>Driver Check Calls</span>
                       </span>
                       <div className="space-y-1.5">
-                        {evidenceBySource.check_calls.map((ev) => (
-                          <div key={ev.id} className="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800 text-xs flex items-center justify-between gap-3">
+                        {evidenceBySource.check_calls.map((ev, idx) => (
+                          <div key={ev.id ? `ev-cc-${ev.id}-${idx}` : `ev-cc-${idx}`} className="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800 text-xs flex items-center justify-between gap-3">
                             <div>
                               <span className="font-semibold text-slate-200">{ev.sourceReference}: </span>
                               <span className="text-slate-300">{ev.extractedFact}</span>
@@ -898,8 +898,8 @@ export const DetentionAuditModal: React.FC<DetentionAuditModalProps> = ({
                         <span>Freight Documents (BOL / POD)</span>
                       </span>
                       <div className="space-y-1.5">
-                        {evidenceBySource.documents.map((ev) => (
-                          <div key={ev.id} className="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800 text-xs flex items-center justify-between gap-3">
+                        {evidenceBySource.documents.map((ev, idx) => (
+                          <div key={ev.id ? `ev-doc-${ev.id}-${idx}` : `ev-doc-${idx}`} className="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800 text-xs flex items-center justify-between gap-3">
                             <div>
                               <span className="font-semibold text-slate-200">{ev.sourceReference}: </span>
                               <span className="text-slate-300">{ev.extractedFact}</span>
@@ -919,8 +919,8 @@ export const DetentionAuditModal: React.FC<DetentionAuditModalProps> = ({
                         <span>Activity Log & Driver Comms</span>
                       </span>
                       <div className="space-y-1.5">
-                        {[...evidenceBySource.notes, ...evidenceBySource.driver].map((ev) => (
-                          <div key={ev.id} className="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800 text-xs flex items-center justify-between gap-3">
+                        {[...evidenceBySource.notes, ...evidenceBySource.driver].map((ev, idx) => (
+                          <div key={ev.id ? `ev-note-${ev.id}-${idx}` : `ev-note-${idx}`} className="p-2.5 rounded-lg bg-slate-950/60 border border-slate-800 text-xs flex items-center justify-between gap-3">
                             <div>
                               <span className="font-semibold text-slate-200">{ev.sourceReference}: </span>
                               <span className="text-slate-300">{ev.extractedFact}</span>
@@ -1119,11 +1119,11 @@ export const DetentionAuditModal: React.FC<DetentionAuditModalProps> = ({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800/60">
-                      {audits.map((a) => {
+                      {audits.map((a, idx) => {
                         const isCurrent = a.id === currentAudit.id;
                         return (
                           <tr
-                            key={a.id}
+                            key={a.id ? `${a.id}-${idx}` : `audit-ver-${a.audit_version || idx}`}
                             className={`hover:bg-slate-800/40 transition-colors ${
                               isCurrent ? 'bg-indigo-950/20' : ''
                             }`}
