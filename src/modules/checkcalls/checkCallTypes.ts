@@ -20,6 +20,17 @@ export type CheckCallOperationalStatus =
   | 'at_risk'
   | 'completed';
 
+/**
+ * Authoritative check whether a check-call type represents departure from pickup facility.
+ * In DispatcherDesk:
+ * - 'loaded': Loaded / Departed Shipper
+ * - 'en_route_delivery': En Route to Delivery
+ */
+export function isPickupDepartureCheckCall(callType?: string | null): boolean {
+  if (!callType) return false;
+  return callType === 'loaded' || callType === 'en_route_delivery';
+}
+
 export interface CheckCall {
   id: string;
   organization_id: string;

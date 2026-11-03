@@ -459,6 +459,11 @@ export const LoadsView: React.FC<LoadsViewProps> = ({
         }}
         onStatusChange={handleStatusChange}
         canEdit={canEdit}
+        onCheckCallUpdated={async (loadId) => {
+          await fetchData();
+          const fresh = await loadService.getLoad(orgId, loadId);
+          if (fresh) setSelectedLoadForDetail(fresh);
+        }}
       />
 
       {/* Bulk Assign Team Member Modal */}

@@ -15,6 +15,7 @@ import {
   isOperationalException,
   isDeliveryEtaDelayed,
   formatTimeSince,
+  isPickupDepartureCheckCall,
 } from './checkCallTypes.ts';
 
 /**
@@ -650,7 +651,7 @@ class CheckCallService implements ICheckCallService {
     loadId: string,
     callType: string
   ): Promise<void> {
-    if (callType === 'en_route_delivery') {
+    if (isPickupDepartureCheckCall(callType)) {
       const currentTargetLoad = await loadService.getLoad(organizationId, loadId);
       if (currentTargetLoad && currentTargetLoad.pipeline_status === 'booked') {
         try {
