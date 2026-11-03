@@ -180,6 +180,7 @@ export async function buildCopilotContext(options: BuildContextOptions): Promise
       destination: `${load.dest_city}, ${load.dest_state}`,
       pickupTimeFormatted: pickupFormatted,
       deliveryTimeFormatted: deliveryFormatted,
+      deliveryDatetimeRaw: load.delivery_datetime || null,
       equipmentType: load.equipment_type,
       carrierClientName: load.client?.company_name || 'Carrier Fleet',
       brokerCompanyName: load.broker?.company_name || 'Brokerage',
@@ -236,6 +237,7 @@ export async function buildCopilotContext(options: BuildContextOptions): Promise
 
     return {
       id: cc.id,
+      loadId: cc.load_id,
       loadNumber: matchedLoad?.load_number || 'N/A',
       callType: cc.call_type,
       status: effectiveStatus,
@@ -246,8 +248,10 @@ export async function buildCopilotContext(options: BuildContextOptions): Promise
       etaDeliveryFormatted: cc.eta_delivery
         ? formatInTimezone(cc.eta_delivery, operationalTimezone, { includeTime: true, includeDate: true })
         : undefined,
+      etaDeliveryRaw: cc.eta_delivery || null,
       notes: cc.notes || undefined,
       loggedAtFormatted: formatDualTime(cc.created_at, operationalTimezone, dispatcherTimezone).combined,
+      eventAtRaw: cc.event_at || cc.created_at,
       isException,
     };
   });

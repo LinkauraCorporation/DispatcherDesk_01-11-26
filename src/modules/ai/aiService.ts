@@ -15,6 +15,7 @@ import { buildCopilotContext } from './aiContextBuilder.ts';
 import {
   DEFAULT_OPERATIONAL_TIMEZONE,
   DEFAULT_DISPATCHER_TIMEZONE,
+  formatInTimezone,
 } from '../../lib/timezones.ts';
 import {
   generateBrokerDetentionEmail,
@@ -26,6 +27,13 @@ import {
 } from '../accessorials/accessorialService.ts';
 import { detentionAuditService } from '../accessorials/detentionAuditService.ts';
 import { loadService } from '../loads/loadService.ts';
+import { checkCallService } from '../checkcalls/checkCallService.ts';
+import {
+  CheckCall,
+  CheckCallType,
+  CHECK_CALL_TYPE_SHORT_LABELS,
+  isDeliveryEtaDelayed,
+} from '../checkcalls/checkCallTypes.ts';
 import { LoadDetentionAudit } from '../../types/domain.types.ts';
 import { AccessorialWithLoad } from '../accessorials/accessorialTypes.ts';
 import { activityService } from '../activity/activityService.ts';
@@ -161,6 +169,24 @@ export async function generateCopilotResponse(
           }
         }
 
+        // If this was a broker email and a delay check call exists, guarantee delay is mentioned and never claim on schedule
+        if (request.action === 'broker_email') {
+          const targetLoad = request.loadId ? context.loads.find((l) => l.id === request.loadId) : context.loads[0];
+          const hasCheckCallDelay = (context.recentCheckCalls || []).some(
+            (c) =>
+              ((c.loadId && targetLoad?.id && c.loadId === targetLoad.id) ||
+               (c.loadNumber && targetLoad?.loadNumber && c.loadNumber === targetLoad.loadNumber)) &&
+              (c.callType === 'delay' || c.callType === 'breakdown' || c.status === 'delayed' || c.status === 'at_risk' || c.isException)
+          );
+          if (hasCheckCallDelay) {
+            const lower = (serverResponse.content || '').toLowerCase();
+            if (lower.includes('on schedule') || lower.includes('tracking smoothly') || lower.includes('no delays')) {
+              console.warn('[AI copilot] Server Gemini claimed on-schedule despite active delay check call. Reverting to deterministic engine.');
+              return executeLocalDeterministicEngine(organizationId, context, request);
+            }
+          }
+        }
+
         return serverResponse;
       }
     } catch (e) {
@@ -267,7 +293,7 @@ async function executeLocalDeterministicEngine(
       return generateLocalExtractTasksFromNotes(responseId, timestamp, context, request);
 
     case 'broker_email':
-      return generateLocalBrokerEmail(responseId, timestamp, context, request);
+      return generateLocalBrokerEmail(responseId, timestamp, context, request, organizationId);
 
     case 'general_query':
     default:
@@ -761,20 +787,199 @@ function generateLocalMissingPaperworkDigest(
 
 /**
  * 6. Local Broker Email Drafter
+ * Generates grounded transit update and delay alert broker communications.
  */
-function generateLocalBrokerEmail(
+export async function generateLocalBrokerEmail(
   responseId: string,
   timestamp: string,
   ctx: AIContext,
-  request: AIRequest
-): AIResponse {
+  request: AIRequest,
+  organizationId?: string
+): Promise<AIResponse> {
   const load = request.loadId ? ctx.loads.find((l: AIContextLoad) => l.id === request.loadId) : ctx.loads[0];
   const brokerName = load?.brokerCompanyName || 'Broker Logistics';
   const brokerContact = load?.brokerContact || 'Brokerage Dispatch Team';
   const loadNumber = load?.loadNumber || 'LD-PENDING';
+  const opsTz = ctx.operationalTimezone || DEFAULT_OPERATIONAL_TIMEZONE;
+  const effectiveOrgId = organizationId || ctx.organizationId;
 
-  const subject = `[STATUS UPDATE] Load #${loadNumber} - ${load?.carrierClientName || 'Carrier Fleet'}`;
-  const body = `ATTENTION: ${brokerContact} (${brokerName})
+  // 1. Retrieve persisted check calls from checkCallService if organizationId is available
+  let checkCalls: CheckCall[] = [];
+  if (effectiveOrgId && load?.id) {
+    try {
+      checkCalls = await checkCallService.getCheckCalls(effectiveOrgId, load.id);
+    } catch (err) {
+      console.warn('[AI copilot] Failed to fetch check calls from checkCallService:', err);
+    }
+  }
+
+  // 2. Determine relevant check calls for this load:
+  // - Prefer authoritative checkCallService results (sorted event_at / created_at DESC)
+  // - Fall back to ctx.recentCheckCalls matching this load
+  let latestCall: CheckCall | AIContextCheckCall | null = null;
+  if (checkCalls.length > 0) {
+    const sorted = [...checkCalls].sort((a, b) => {
+      const timeA = new Date(a.event_at || a.created_at).getTime();
+      const timeB = new Date(b.event_at || b.created_at).getTime();
+      return timeB - timeA;
+    });
+    latestCall = sorted[0];
+  } else if (ctx.recentCheckCalls && ctx.recentCheckCalls.length > 0) {
+    const matched = ctx.recentCheckCalls.filter(
+      (c) =>
+        (c.loadId && load?.id && c.loadId === load.id) ||
+        (c.loadNumber && load?.loadNumber && c.loadNumber === load.loadNumber)
+    );
+    if (matched.length > 0) {
+      const sortedMatched = [...matched].sort((a, b) => {
+        const timeA = new Date((a as any).eventAtRaw || (a as any).event_at || (a as any).created_at || 0).getTime();
+        const timeB = new Date((b as any).eventAtRaw || (b as any).event_at || (b as any).created_at || 0).getTime();
+        return timeB - timeA;
+      });
+      latestCall = sortedMatched[0];
+    }
+  }
+
+  // 3. Inspect if the most recent relevant check-call indicates a delay
+  const callType = latestCall ? ((latestCall as any).call_type || (latestCall as any).callType) : null;
+  const status = latestCall ? (latestCall as any).status : null;
+  const etaDeliveryRaw = latestCall ? ((latestCall as any).eta_delivery || (latestCall as any).etaDeliveryRaw || null) : null;
+  const schedDelivery = load?.deliveryDatetimeRaw || (load as any)?.delivery_datetime || null;
+  const isEtaDelayed = latestCall && schedDelivery && etaDeliveryRaw
+    ? isDeliveryEtaDelayed(schedDelivery, etaDeliveryRaw)
+    : false;
+
+  const hasActiveDelay = Boolean(
+    latestCall &&
+    (callType === 'delay' ||
+     callType === 'breakdown' ||
+     status === 'delayed' ||
+     status === 'at_risk' ||
+     isEtaDelayed ||
+     (latestCall as any).isException === true)
+  );
+
+  let subject: string;
+  let body: string;
+  const groundingSources: GroundingSource[] = [];
+  if (load) {
+    groundingSources.push({ type: 'load', id: load.id, label: `Load #${load.loadNumber}` });
+  }
+
+  if (hasActiveDelay && latestCall) {
+    subject = `[TRANSIT DELAY UPDATE] Load #${loadNumber} - ${load?.carrierClientName || 'Carrier Fleet'}`;
+    groundingSources.push({
+      type: 'check_call',
+      id: latestCall.id,
+      label: `Check Call (${CHECK_CALL_TYPE_SHORT_LABELS[callType as CheckCallType] || callType || 'Delay'})`,
+    });
+
+    const statusLabel =
+      callType === 'breakdown'
+        ? 'BREAKDOWN'
+        : status === 'delayed'
+        ? 'DELAYED'
+        : status === 'at_risk'
+        ? 'AT RISK'
+        : 'DELAYED';
+
+    const bullets: string[] = [
+      `• Assigned Driver: ${load?.driverName || 'Assigned Driver'}`,
+      `• Equipment: Truck #${load?.truckNumber || '101'} (${load?.equipmentType.toUpperCase()})`,
+      `• Current Status: ${statusLabel} (${load?.pipelineStatus.replace('_', ' ').toUpperCase()})`,
+      `• Delivery Scheduled: ${load?.deliveryTimeFormatted}`,
+    ];
+
+    // Formatted revised ETA
+    let formattedEta: string | null = null;
+    if ((latestCall as any).etaDeliveryFormatted) {
+      formattedEta = (latestCall as any).etaDeliveryFormatted;
+    } else if (etaDeliveryRaw) {
+      formattedEta = formatInTimezone(etaDeliveryRaw, opsTz, {
+        includeDate: true,
+        includeTime: true,
+        includeTimezoneCode: true,
+      });
+    }
+
+    if (formattedEta) {
+      bullets.push(`• Revised Delivery ETA: ${formattedEta}`);
+    }
+
+    // Location
+    const city = (latestCall as any).location_city;
+    const state = (latestCall as any).location_state;
+    const locationStr =
+      city && state
+        ? `${city}, ${state}`
+        : (latestCall as any).location && (latestCall as any).location !== 'Location Pending'
+        ? (latestCall as any).location
+        : null;
+
+    if (locationStr) {
+      bullets.push(`• Last Reported Location: ${locationStr}`);
+    }
+
+    // Extract delay reason and duration from persisted check call without inventing values
+    const delayReason = (latestCall as any).notes?.trim() || null;
+
+    let durationStr: string | null = null;
+    if (etaDeliveryRaw && schedDelivery) {
+      const schedMs = new Date(schedDelivery).getTime();
+      const etaMs = new Date(etaDeliveryRaw).getTime();
+      if (!isNaN(schedMs) && !isNaN(etaMs) && etaMs > schedMs) {
+        const diffMinutes = Math.round((etaMs - schedMs) / (60 * 1000));
+        const diffHours = Math.floor(diffMinutes / 60);
+        const remMinutes = diffMinutes % 60;
+        if (diffHours > 0 && remMinutes > 0) {
+          durationStr = `approximately ${diffHours} hr ${remMinutes} min`;
+        } else if (diffHours > 0) {
+          durationStr = `approximately ${diffHours} hour${diffHours > 1 ? 's' : ''}`;
+        } else if (remMinutes > 0) {
+          durationStr = `approximately ${remMinutes} minutes`;
+        }
+      }
+    }
+
+    let deliveryImpactStr: string | null = null;
+    if (durationStr && formattedEta) {
+      deliveryImpactStr = `${durationStr} (updated ETA: ${formattedEta})`;
+    } else if (formattedEta) {
+      deliveryImpactStr = `updated delivery ETA of ${formattedEta}`;
+    } else if (durationStr) {
+      deliveryImpactStr = durationStr;
+    }
+
+    let delayParagraph = '';
+    if (delayReason && deliveryImpactStr) {
+      delayParagraph = `The driver has experienced a delay due to ${delayReason}. The current estimated delivery impact is ${deliveryImpactStr}, and we will continue to monitor the load.`;
+    } else if (delayReason) {
+      delayParagraph = `The driver has experienced a delay due to ${delayReason}. Current delivery impact is being monitored, and we will keep you updated.`;
+    } else if (deliveryImpactStr) {
+      delayParagraph = `The driver has experienced a transit delay. The current estimated delivery impact is ${deliveryImpactStr}, and we will continue to monitor the load.`;
+    } else {
+      delayParagraph = `The driver has experienced a transit delay. Current delivery impact is being monitored, and we will keep you updated.`;
+    }
+
+    body = `ATTENTION: ${brokerContact} (${brokerName})
+RE: Load Status & Transit Update for Load #${loadNumber}
+
+Dear Broker Team,
+
+We are providing a transit tracking update for Load #${loadNumber} (${load?.origin} to ${load?.destination}):
+
+${bullets.join('\n')}
+
+${delayParagraph} Please let us know if you require any additional check-in details.
+
+Best regards,
+Dispatch Operations Team
+${load?.carrierClientName || 'Carrier Fleet'}`;
+
+  } else {
+    // Normal routine tracking update (preserved existing behavior)
+    subject = `[STATUS UPDATE] Load #${loadNumber} - ${load?.carrierClientName || 'Carrier Fleet'}`;
+    body = `ATTENTION: ${brokerContact} (${brokerName})
 RE: Load Status & Transit Update for Load #${loadNumber}
 
 Dear Broker Team,
@@ -791,8 +996,9 @@ The driver is on schedule and tracking smoothly. Please let us know if you requi
 Best regards,
 Dispatch Operations Team
 ${load?.carrierClientName || 'Carrier Fleet'}`;
+  }
 
-  const markdown = `### ✉️ Broker Status Update Email Draft\n\n` +
+  const markdown = `### ✉️ ${hasActiveDelay ? 'Broker Transit Delay Notice' : 'Broker Status Update Email Draft'}\n\n` +
     `**Subject:** \`${subject}\`\n\n` +
     `\`\`\`text\n${body}\n\`\`\`\n\n` +
     `*Review and copy to send to broker.*`;
@@ -801,15 +1007,18 @@ ${load?.carrierClientName || 'Carrier Fleet'}`;
     id: responseId,
     action: 'broker_email',
     mode: 'local',
-    title: `Broker Email Draft (Load #${loadNumber})`,
+    title: `${hasActiveDelay ? 'Broker Delay Notice' : 'Broker Email Draft'} (Load #${loadNumber})`,
     content: body,
     markdownContent: markdown,
     subject,
     timestamp,
-    groundingSources: load ? [{ type: 'load', id: load.id, label: `Load #${load.loadNumber}` }] : [],
-    recommendations: ['Confirm broker recipient email before sending.'],
+    groundingSources,
+    recommendations: hasActiveDelay
+      ? ['Notify broker proactively to maintain dispatch standing and prevent accessorial disputes.', 'Confirm broker recipient email before sending.']
+      : ['Confirm broker recipient email before sending.'],
     suggestedActions: [
       { label: 'Copy Email', action: 'copy_clipboard', payload: { text: body } },
+      ...(hasActiveDelay && load?.id ? [{ label: 'Log Check Call Update', action: 'log_check_call', payload: { loadId: load.id } }] : []),
     ],
     isDraft: true,
     requiresConfirmation: true,

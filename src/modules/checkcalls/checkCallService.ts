@@ -219,6 +219,7 @@ class CheckCallService implements ICheckCallService {
 
   private readRawCheckCalls(organizationId: string): CheckCall[] {
     if (!organizationId) return [];
+    if (typeof localStorage === 'undefined') return [];
 
     const isDemoOrg = organizationId === DEMO_ORGANIZATION_ID || !isUUID(organizationId);
 
@@ -282,6 +283,7 @@ class CheckCallService implements ICheckCallService {
 
   private writeRawCheckCalls(organizationId: string, calls: CheckCall[]): void {
     if (!organizationId) return;
+    if (typeof localStorage === 'undefined') return;
     try {
       // Ensure all persisted records strictly carry the active organization_id
       const sanitized = calls.filter((c) => c && c.organization_id === organizationId);

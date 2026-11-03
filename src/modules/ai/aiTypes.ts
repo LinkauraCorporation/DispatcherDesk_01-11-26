@@ -51,6 +51,7 @@ export interface AIContextLoad {
   destination: string; // e.g. "Atlanta, GA"
   pickupTimeFormatted: string;
   deliveryTimeFormatted: string;
+  deliveryDatetimeRaw?: string | null;
   equipmentType: EquipmentType | string;
   carrierClientName: string;
   brokerCompanyName: string;
@@ -74,14 +75,17 @@ export interface AIContextLoad {
 // Compact context for recent check calls
 export interface AIContextCheckCall {
   id: string;
+  loadId?: string;
   loadNumber: string;
   callType: CheckCallType;
   status: CheckCallOperationalStatus;
   location: string;
   etaPickupFormatted?: string;
   etaDeliveryFormatted?: string;
+  etaDeliveryRaw?: string | null;
   notes?: string;
   loggedAtFormatted: string;
+  eventAtRaw?: string;
   isException: boolean; // true if delay, breakdown, or at_risk
 }
 

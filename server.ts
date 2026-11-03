@@ -2732,6 +2732,18 @@ You MUST use these exact verified figures. Do NOT recalculate or modify any of t
 - DO NOT calculate live detention against current clock or arrival times.
 - Set isDraft: true and requiresConfirmation: true.
 `;
+    } else if (request.action === 'broker_email') {
+      actionSpecificInstructions = `
+CRITICAL BROKER STATUS / TRANSIT UPDATE RULES:
+1. Ground the update strictly in the load's check-call records.
+2. If any recent check-call indicates a delay (status is delayed/at_risk, type is delay/breakdown, or delivery ETA exceeds scheduled delivery):
+   - You MUST explicitly inform the broker of the delay.
+   - Include the delay reason, duration impact, and revised delivery ETA if available in the check calls.
+   - NEVER say "on schedule", "tracking smoothly", or "no delays" when a delay check call exists.
+3. If no delay check call exists, maintain the normal on-schedule update.
+4. DO NOT output "[object Object]" under any circumstances.
+5. Set isDraft: true.
+`;
     }
 
     const prompt = `You are DispatchDesk AI, an expert freight dispatcher and operations copilot for North American trucking fleets.
@@ -2784,6 +2796,22 @@ Provide a grounded, professional response as JSON adhering strictly to:
           const authHours = `${context.detentionAudit.billableHours} hours`;
           if (!content.includes(authAmount) || !content.includes(authHours)) {
             throw new Error(`Model output did not preserve authoritative audit figures (${authAmount}, ${authHours}).`);
+          }
+        }
+
+        if (request.action === 'broker_email') {
+          const targetLoad = request.loadId ? (context.loads || []).find((l: any) => l.id === request.loadId) : (context.loads || [])[0];
+          const hasCheckCallDelay = (context.recentCheckCalls || []).some(
+            (c: any) =>
+              ((c.loadId && targetLoad?.id && c.loadId === targetLoad.id) ||
+               (c.loadNumber && targetLoad?.loadNumber && c.loadNumber === targetLoad.loadNumber)) &&
+              (c.callType === 'delay' || c.callType === 'breakdown' || c.status === 'delayed' || c.status === 'at_risk' || c.isException)
+          );
+          if (hasCheckCallDelay) {
+            const lower = (content || '').toLowerCase();
+            if (lower.includes('on schedule') || lower.includes('tracking smoothly') || lower.includes('no delays')) {
+              throw new Error('Model claimed on-schedule despite active delay check call.');
+            }
           }
         }
 
