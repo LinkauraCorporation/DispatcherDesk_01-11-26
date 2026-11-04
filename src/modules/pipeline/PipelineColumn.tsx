@@ -104,7 +104,7 @@ export const PipelineColumn: React.FC<PipelineColumnProps> = ({
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      className={`flex flex-col w-[300px] min-w-[280px] max-w-[320px] shrink-0 rounded-2xl bg-slate-900/60 border max-h-[calc(100vh-280px)] min-h-[380px] transition-colors duration-200 shadow-sm overflow-hidden ${
+      className={`flex flex-col w-[300px] min-w-[280px] max-w-[320px] shrink-0 rounded-2xl bg-slate-900/60 border h-[calc(100vh-280px)] min-h-[380px] transition-colors duration-200 shadow-sm overflow-hidden transform-gpu ${
         isDragOver
           ? 'border-sky-500 bg-sky-950/20 ring-2 ring-sky-500/40 shadow-lg shadow-sky-900/20'
           : 'border-slate-800/90'
@@ -150,7 +150,7 @@ export const PipelineColumn: React.FC<PipelineColumnProps> = ({
       </div>
 
       {/* Column Body / Drop Zone */}
-      <div className="p-2.5 sm:p-3 flex-1 min-h-0 overflow-y-auto overflow-x-hidden space-y-3 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-transparent">
+      <div className="p-2.5 sm:p-3 flex-1 min-h-0 overflow-y-auto overflow-x-hidden space-y-3 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-transparent [scrollbar-gutter:stable]">
         {loads.length === 0 ? (
           <div
             className={`h-full min-h-[180px] flex flex-col items-center justify-center p-4 text-center rounded-xl border border-dashed transition-colors ${
