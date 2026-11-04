@@ -535,13 +535,13 @@ export const PipelineView: React.FC<PipelineViewProps> = ({ onNewLoadClick, onNa
       {isLoading ? (
         <div
           id="pipeline-loading-skeleton"
-          className="w-full overflow-x-auto pb-6 pt-1 select-none scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-slate-900"
+          className="w-full overflow-x-auto overflow-y-hidden pb-4 pt-1 select-none scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-slate-900"
         >
-          <div className="flex gap-4 min-w-[1400px] items-start animate-pulse">
+          <div className="flex gap-4 w-max min-w-full items-start animate-pulse pb-2">
             {PIPELINE_COLUMNS.map((c) => (
               <div
                 key={c.id}
-                className="flex flex-col flex-1 min-w-[280px] max-w-[320px] rounded-2xl bg-slate-900/60 border border-slate-800/80 overflow-hidden"
+                className="flex flex-col w-[300px] min-w-[280px] max-w-[320px] shrink-0 rounded-2xl bg-slate-900/60 border border-slate-800/80 max-h-[calc(100vh-280px)] min-h-[380px] overflow-hidden"
               >
                 {/* Column Header Skeleton */}
                 <div className="p-3.5 bg-slate-950/80 border-b border-slate-800 space-y-2">

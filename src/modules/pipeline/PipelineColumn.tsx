@@ -104,14 +104,14 @@ export const PipelineColumn: React.FC<PipelineColumnProps> = ({
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      className={`flex flex-col flex-1 min-w-[280px] max-w-[320px] rounded-2xl bg-slate-900/60 border transition-all duration-200 shadow-sm ${
+      className={`flex flex-col w-[300px] min-w-[280px] max-w-[320px] shrink-0 rounded-2xl bg-slate-900/60 border max-h-[calc(100vh-280px)] min-h-[380px] transition-colors duration-200 shadow-sm overflow-hidden ${
         isDragOver
           ? 'border-sky-500 bg-sky-950/20 ring-2 ring-sky-500/40 shadow-lg shadow-sky-900/20'
           : 'border-slate-800/90'
       }`}
     >
       {/* Column Header */}
-      <div className={`p-3.5 rounded-t-2xl space-y-2 ${stageHeaderBg}`}>
+      <div className={`p-3.5 rounded-t-2xl space-y-2 shrink-0 ${stageHeaderBg}`}>
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-1.5 flex-wrap">
             <span
@@ -150,7 +150,7 @@ export const PipelineColumn: React.FC<PipelineColumnProps> = ({
       </div>
 
       {/* Column Body / Drop Zone */}
-      <div className="p-2.5 sm:p-3 flex-1 space-y-3 min-h-[380px] overflow-y-auto max-h-[calc(100vh-280px)]">
+      <div className="p-2.5 sm:p-3 flex-1 min-h-0 overflow-y-auto overflow-x-hidden space-y-3 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-transparent">
         {loads.length === 0 ? (
           <div
             className={`h-full min-h-[180px] flex flex-col items-center justify-center p-4 text-center rounded-xl border border-dashed transition-colors ${

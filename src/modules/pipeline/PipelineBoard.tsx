@@ -66,9 +66,9 @@ export const PipelineBoard: React.FC<PipelineBoardProps> = ({
   return (
     <div
       id="pipeline-kanban-board"
-      className="w-full overflow-x-auto pb-6 pt-1 select-none scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-slate-900"
+      className="w-full overflow-x-auto overflow-y-hidden pb-4 pt-1 select-none scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-slate-900"
     >
-      <div className="flex gap-4 min-w-[1400px] items-start">
+      <div className="flex gap-4 w-max min-w-full items-start pb-2">
         {PIPELINE_COLUMNS.map((column) => (
           <PipelineColumn
             key={column.id}
