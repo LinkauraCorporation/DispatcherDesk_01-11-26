@@ -43,7 +43,7 @@ app.use((req, res, next) => {
   if (origin === 'https://dispatcherdesk.online') {
     res.setHeader('Access-Control-Allow-Origin', 'https://dispatcherdesk.online');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, Accept, x-organization-id');
+    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, Accept, x-organization-id, idempotency-key');
     res.setHeader('Access-Control-Allow-Credentials', 'true');
   }
 
