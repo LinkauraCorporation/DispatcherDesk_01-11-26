@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useAuth } from '../../contexts/AuthContext.tsx';
 import { loadService } from '../loads/loadService.ts';
 import { checkCallService } from '../checkcalls/checkCallService.ts';
@@ -64,46 +64,172 @@ export const DispatchMapView: React.FC<DispatchMapViewProps> = ({ onNewLoadClick
   const [selectedLoadForDetail, setSelectedLoadForDetail] = useState<LoadWithRelations | null>(null);
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
 
-  // Fetch all domain data
-  const fetchData = useCallback(async () => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      const [fetchedLoads, fetchedCheckCalls, fetchedClients, fetchedDrivers, fetchedTrucks] =
-        await Promise.all([
-          loadService.getLoads(orgId, { userRole: userRole || undefined, currentUserId: user?.id }),
-          checkCallService.getCheckCalls(orgId),
-          clientService.getClients(orgId),
-          driverService.getDrivers(orgId),
-          truckService.getTrucks(orgId),
-        ]);
+  // Lifecycle & Request Versioning Refs
+  const isMountedRef = useRef<boolean>(true);
+  const refreshDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const latestRequestIdRef = useRef<number>(0);
 
-      setLoads(fetchedLoads);
-      setCheckCalls(fetchedCheckCalls);
-      setClients(fetchedClients);
-      setDrivers(fetchedDrivers);
-      setTrucks(fetchedTrucks);
-
-      // Auto-select first active load if none selected
-      if (!selectedLoadId && fetchedLoads.length > 0) {
-        const firstActive = fetchedLoads.find(
-          (l) => l.pipeline_status === 'in_transit' || l.pipeline_status === 'booked'
-        );
-        if (firstActive) {
-          setSelectedLoadId(firstActive.id);
-        }
-      }
-    } catch (err: any) {
-      console.error('Failed to load dispatch map data:', err);
-      setError(err?.message || 'Failed to load dispatch operations data');
-    } finally {
-      setIsLoading(false);
-    }
-  }, [orgId, selectedLoadId]);
+  // Track active context to immediately clear previous organization's data upon switch
+  const activeContextRef = useRef({ orgId, userId: user?.id, userRole });
 
   useEffect(() => {
-    fetchData();
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      latestRequestIdRef.current++;
+      if (refreshDebounceTimerRef.current) {
+        clearTimeout(refreshDebounceTimerRef.current);
+        refreshDebounceTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  // When organization or user context switches, immediately wipe previous organization data from view
+  useEffect(() => {
+    const prev = activeContextRef.current;
+    const hasContextChanged =
+      prev.orgId !== orgId || prev.userId !== user?.id || prev.userRole !== userRole;
+
+    if (hasContextChanged) {
+      activeContextRef.current = { orgId, userId: user?.id, userRole };
+
+      // Invalidate any in-flight requests and cancel pending refresh timers
+      latestRequestIdRef.current++;
+      if (refreshDebounceTimerRef.current) {
+        clearTimeout(refreshDebounceTimerRef.current);
+        refreshDebounceTimerRef.current = null;
+      }
+
+      // Clear previous organization data immediately
+      setLoads([]);
+      setCheckCalls([]);
+      setClients([]);
+      setDrivers([]);
+      setTrucks([]);
+      setSelectedLoadId(null);
+      setSelectedLoadForDetail(null);
+      setIsLoading(true);
+      setError(null);
+    }
+  }, [orgId, user?.id, userRole]);
+
+  // Fetch all domain data (supports silent refresh to preserve map viewport, zoom, and canvas DOM)
+  const fetchData = useCallback(
+    async (isSilent = false) => {
+      const requestId = ++latestRequestIdRef.current;
+      const requestOrgId = orgId;
+      const requestUserId = user?.id;
+      const requestUserRole = userRole;
+
+      if (!isSilent && isMountedRef.current) {
+        setIsLoading(true);
+        setError(null);
+      }
+
+      try {
+        const [fetchedLoads, fetchedCheckCalls, fetchedClients, fetchedDrivers, fetchedTrucks] =
+          await Promise.all([
+            loadService.getLoads(requestOrgId, { userRole: requestUserRole || undefined, currentUserId: requestUserId }),
+            checkCallService.getCheckCalls(requestOrgId),
+            clientService.getClients(requestOrgId),
+            driverService.getDrivers(requestOrgId),
+            truckService.getTrucks(requestOrgId),
+          ]);
+
+        // Discard result if component unmounted, a newer request was dispatched, or context switched
+        if (
+          !isMountedRef.current ||
+          requestId !== latestRequestIdRef.current ||
+          requestOrgId !== orgId ||
+          requestUserId !== user?.id ||
+          requestUserRole !== userRole
+        ) {
+          return;
+        }
+
+        setLoads(fetchedLoads);
+        setCheckCalls(fetchedCheckCalls);
+        setClients(fetchedClients);
+        setDrivers(fetchedDrivers);
+        setTrucks(fetchedTrucks);
+
+        // Update selectedLoadForDetail if currently open in modal (or null if no longer in active org)
+        setSelectedLoadForDetail((prev) =>
+          prev ? fetchedLoads.find((l) => l.id === prev.id) || null : null
+        );
+
+        // Preserve current selected load if still valid in active org; otherwise auto-select first active load
+        setSelectedLoadId((prev) => {
+          if (prev && fetchedLoads.some((l) => l.id === prev)) {
+            return prev;
+          }
+          const firstActive = fetchedLoads.find(
+            (l) => l.pipeline_status === 'in_transit' || l.pipeline_status === 'booked'
+          );
+          return firstActive ? firstActive.id : (fetchedLoads[0]?.id || null);
+        });
+      } catch (err: any) {
+        console.error('Failed to load dispatch map data:', err);
+        if (
+          !isSilent &&
+          isMountedRef.current &&
+          requestId === latestRequestIdRef.current &&
+          requestOrgId === orgId &&
+          requestUserId === user?.id &&
+          requestUserRole === userRole
+        ) {
+          setError(err?.message || 'Failed to load dispatch operations data');
+        }
+      } finally {
+        if (
+          !isSilent &&
+          isMountedRef.current &&
+          requestId === latestRequestIdRef.current &&
+          requestOrgId === orgId &&
+          requestUserId === user?.id &&
+          requestUserRole === userRole
+        ) {
+          setIsLoading(false);
+        }
+      }
+    },
+    [orgId, userRole, user?.id]
+  );
+
+  // Debounced silent refresh: coalesces notifySubscribers and modal onCheckCallUpdated into a single API request
+  const triggerSilentRefresh = useCallback(() => {
+    if (refreshDebounceTimerRef.current) {
+      clearTimeout(refreshDebounceTimerRef.current);
+    }
+    refreshDebounceTimerRef.current = setTimeout(() => {
+      refreshDebounceTimerRef.current = null;
+      if (isMountedRef.current) {
+        fetchData(true);
+      }
+    }, 50);
   }, [fetchData]);
+
+  // Initial load
+  useEffect(() => {
+    fetchData(false);
+  }, [fetchData]);
+
+  // Real-time synchronization: subscribe to check call updates to reflect driver tracking and location immediately
+  useEffect(() => {
+    if (!orgId) return;
+
+    const unsubscribe = checkCallService.subscribeToLoadTracking(null, () => {
+      triggerSilentRefresh();
+    });
+
+    return () => {
+      unsubscribe();
+      if (refreshDebounceTimerRef.current) {
+        clearTimeout(refreshDebounceTimerRef.current);
+        refreshDebounceTimerRef.current = null;
+      }
+    };
+  }, [orgId, triggerSilentRefresh]);
 
   // Construct Map Routes from domain data
   const allRoutes: MapLoadRoute[] = useMemo(() => {
@@ -315,7 +441,7 @@ export const DispatchMapView: React.FC<DispatchMapViewProps> = ({ onNewLoadClick
   const handleStatusChange = async (loadId: string, newStatus: PipelineStatus) => {
     try {
       await loadService.updateLoad(orgId, loadId, { pipeline_status: newStatus });
-      await fetchData();
+      triggerSilentRefresh();
     } catch (err) {
       console.error('Failed to update load status from map:', err);
     }
@@ -337,7 +463,7 @@ export const DispatchMapView: React.FC<DispatchMapViewProps> = ({ onNewLoadClick
         <h3 className="text-base font-bold text-slate-100">Unable to load map data</h3>
         <p className="text-xs text-rose-300/80">{error}</p>
         <button
-          onClick={fetchData}
+          onClick={() => fetchData(false)}
           className="px-4 py-2 bg-rose-900/60 hover:bg-rose-900 border border-rose-700/60 rounded-lg text-xs font-semibold text-rose-100 cursor-pointer"
         >
           Retry
@@ -388,7 +514,7 @@ export const DispatchMapView: React.FC<DispatchMapViewProps> = ({ onNewLoadClick
           </div>
 
           <button
-            onClick={fetchData}
+            onClick={() => fetchData(false)}
             title="Refresh map data"
             className="p-2 text-slate-400 hover:text-slate-200 bg-slate-900 hover:bg-slate-850 border border-slate-800 rounded-lg transition-colors cursor-pointer"
           >
@@ -452,6 +578,7 @@ export const DispatchMapView: React.FC<DispatchMapViewProps> = ({ onNewLoadClick
           }}
           load={selectedLoadForDetail}
           onStatusChange={handleStatusChange}
+          onCheckCallUpdated={triggerSilentRefresh}
         />
       )}
     </div>

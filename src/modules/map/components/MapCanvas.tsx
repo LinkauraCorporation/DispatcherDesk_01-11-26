@@ -162,6 +162,13 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
   const [isLegendOpen, setIsLegendOpen] = useState(true);
   const [activeTileTheme, setActiveTileTheme] = useState<'dark' | 'voyager'>('dark');
   const tileLayerRef = useRef<L.TileLayer | null>(null);
+  const lastFocusedLoadIdRef = useRef<string | null>(null);
+  const openPopupRef = useRef<{
+    loadId: string;
+    stopType: string;
+    stopId: string;
+  } | null>(null);
+  const isRecreatingLayersRef = useRef<boolean>(false);
 
   // Initialize Leaflet Map
   useEffect(() => {
@@ -211,6 +218,14 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
     };
     container.addEventListener('click', handlePopupClick);
 
+    // Track user-initiated popup close to reset tracked popup state
+    const handleMapPopupClose = () => {
+      if (!isRecreatingLayersRef.current) {
+        openPopupRef.current = null;
+      }
+    };
+    map.on('popupclose', handleMapPopupClose);
+
     // Resize observer to ensure Leaflet renders correctly across layout shifts
     const resizeObserver = new ResizeObserver((entries) => {
       if (!mapInstanceRef.current || !mapContainerRef.current) return;
@@ -232,6 +247,7 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
       if (mapInstanceRef.current) {
         const map = mapInstanceRef.current;
         try {
+          map.off('popupclose', handleMapPopupClose);
           map.stop();
           map.closePopup();
           if (layerGroupRef.current) layerGroupRef.current.clearLayers();
@@ -301,6 +317,8 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
 
     if (!map || !markerGroup || !polyGroup) return;
 
+    isRecreatingLayersRef.current = true;
+
     // Safely close open popups before clearing layers to avoid race condition during animations
     try {
       map.closePopup();
@@ -308,7 +326,11 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
       polyGroup.clearLayers();
     } catch {}
 
-    if (routes.length === 0) return;
+    if (routes.length === 0) {
+      openPopupRef.current = null;
+      isRecreatingLayersRef.current = false;
+      return;
+    }
 
     // Draw unselected lines first, then selected on top
     routes.forEach((route) => {
@@ -346,6 +368,8 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
       }).addTo(polyGroup);
     }
 
+    let markerToRestore: L.Marker | null = null;
+
     // Render Markers
     routes.forEach((route) => {
       const isSelected = route.load.id === selectedLoadId;
@@ -373,17 +397,66 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
         marker.on('click', () => {
           onSelectLoad(route.load.id);
         });
+
+        marker.on('popupopen', () => {
+          openPopupRef.current = {
+            loadId: route.load.id,
+            stopType: stop.type,
+            stopId: stop.id,
+          };
+        });
+
+        // Determine if this marker corresponds to the currently open popup
+        if (openPopupRef.current) {
+          const isExactStop = openPopupRef.current.stopId === stop.id;
+          const isSameCheckCall =
+            stop.type === 'checkcall' &&
+            openPopupRef.current.stopType === 'checkcall' &&
+            openPopupRef.current.loadId === route.load.id;
+
+          if (isExactStop || isSameCheckCall) {
+            markerToRestore = marker;
+          }
+        }
       });
     });
+
+    // Safely restore open popup on updated marker position without map pan/zoom side effects
+    if (markerToRestore) {
+      try {
+        (markerToRestore as L.Marker).openPopup();
+      } catch (err) {
+        console.warn('Could not restore marker popup:', err);
+      }
+    }
+
+    isRecreatingLayersRef.current = false;
   }, [routes, selectedLoadId, onSelectLoad, onOpenLoadDetail]);
+
+  // Clear open popup if selected load explicitly changes to a different load
+  useEffect(() => {
+    if (selectedLoadId && openPopupRef.current && openPopupRef.current.loadId !== selectedLoadId) {
+      openPopupRef.current = null;
+    }
+  }, [selectedLoadId]);
 
   // Focus on Selected Load when selection changes
   useEffect(() => {
     const map = mapInstanceRef.current;
-    if (!map || !selectedLoadId) return;
+    if (!map || !selectedLoadId) {
+      lastFocusedLoadIdRef.current = null;
+      return;
+    }
+
+    // Only auto-focus camera if the selected load has changed, avoiding camera jumps during silent refreshes
+    if (lastFocusedLoadIdRef.current === selectedLoadId) {
+      return;
+    }
 
     const selectedRoute = routes.find((r) => r.load.id === selectedLoadId);
     if (!selectedRoute || selectedRoute.stops.length === 0) return;
+
+    lastFocusedLoadIdRef.current = selectedLoadId;
 
     const stopCoords: L.LatLngExpression[] = selectedRoute.stops.map((s) => [s.lat, s.lng]);
     try {
